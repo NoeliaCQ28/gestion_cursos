@@ -50,6 +50,9 @@ def trigger_n8n_workflow(workflow_type, data):
         "workflow_type": workflow_type,
         "data": data
     }
+    
+    st.write("Enviando este payload a n8n:", payload) # <-- AÑADE ESTA LÍNEA
+
     try:
         response = requests.post(N8N_WEBHOOK_URL, json=payload)
         return response.status_code == 200
