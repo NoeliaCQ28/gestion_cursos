@@ -51,7 +51,7 @@ def trigger_n8n_workflow(workflow_type, data):
         "data": data
     }
     
-    st.write("Enviando este payload a n8n:", payload) # <-- AÑADE ESTA LÍNEA
+    st.write("Enviando este payload a n8n:", payload)
 
     try:
         response = requests.post(N8N_WEBHOOK_URL, json=payload)
@@ -79,49 +79,24 @@ def get_exam_results():
     response = supabase.table('exam_results').select('*, exams(*), students(*)').execute()
     return response.data
 
-def generate_pdf_report():
-    """Genera reporte PDF con estadísticas"""
-    pdf = PDFReport()
-    pdf.add_page()
-
-    # Estadísticas generales
-    courses = get_courses()
-    students = get_students()
-    enrollments = get_enrollments()
-    exam_results = get_exam_results()
-
-    pdf.chapter_title("Estadísticas Generales")
-    stats_text = f"""
-    Total de Cursos: {len(courses)}
-    Total de Estudiantes: {len(students)}
-    Total de Inscripciones: {len(enrollments)}
-    Tasa de Completación: {len([e for e in enrollments if e['completion_status'] == 'completed']) / len(enrollments) * 100 if enrollments else 0:.2f}%
-    Promedio de Calificaciones: {sum([er['score'] for er in exam_results if er['score']]) / len(exam_results) if exam_results else 0:.2f}
-    """
-    pdf.chapter_body(stats_text)
-
-    # Cursos más populares
-    pdf.chapter_title("Cursos Más Populares")
-    course_enrollments = {}
-    for enrollment in enrollments:
-        course_name = enrollment['courses']['name']
-        course_enrollments[course_name] = course_enrollments.get(course_name, 0) + 1
-
-    popular_courses = "\n".join([f"{course}: {count} estudiantes"
-                                 for course, count in sorted(course_enrollments.items(),
-                                                             key=lambda x: x[1], reverse=True)[:5]])
-    pdf.chapter_body(popular_courses)
-
-    return pdf
+# --- NUEVO ---
+def get_exams():
+    """Obtiene todos los exámenes"""
+    # Hacemos un join simple para obtener el título del curso al que pertenece el módulo
+    response = supabase.table('exams').select('*, course_modules(title, courses(name))').execute()
+    return response.data
+# --- FIN NUEVO ---
 
 def main():
     st.title(" 🎓  Sistema de Gestión de Cursos Online")
 
     # Sidebar para navegación
+    # --- MODIFICADO ---
     menu = st.sidebar.selectbox(
         "Menú Principal",
-        ["Dashboard", "Gestión de Cursos", "Estudiantes", "Inscripciones", "Reportes", "Configuración"]
+        ["Dashboard", "Gestión de Cursos", "Estudiantes", "Inscripciones", "Gestión de Exámenes", "Reportes", "Configuración"]
     )
+    # --- FIN MODIFICADO ---
 
     if menu == "Dashboard":
         show_dashboard()
@@ -131,6 +106,10 @@ def main():
         manage_students()
     elif menu == "Inscripciones":
         manage_enrollments()
+    # --- NUEVO ---
+    elif menu == "Gestión de Exámenes":
+        manage_exams()
+    # --- FIN NUEVO ---
     elif menu == "Reportes":
         show_reports()
     elif menu == "Configuración":
@@ -154,8 +133,9 @@ def show_dashboard():
     with col3:
         st.metric("Inscripciones Activas", len([e for e in enrollments if e['completion_status'] == 'in_progress']))
     with col4:
-        avg_score = sum([er['score'] for er in exam_results if er['score']]) / len(exam_results) if exam_results else 0
+        avg_score = sum([er['score'] for er in exam_results if er.get('score')]) / len(exam_results) if exam_results else 0
         st.metric("Promedio Calificaciones", f"{avg_score:.2f}")
+
 
     # Gráficos
     col1, col2 = st.columns(2)
@@ -165,15 +145,17 @@ def show_dashboard():
         if enrollments:
             course_data = {}
             for enrollment in enrollments:
-                course_name = enrollment['courses']['name']
-                course_data[course_name] = course_data.get(course_name, 0) + 1
+                if enrollment.get('courses'):
+                    course_name = enrollment['courses']['name']
+                    course_data[course_name] = course_data.get(course_name, 0) + 1
 
-            fig = px.pie(
-                values=list(course_data.values()),
-                names=list(course_data.keys()),
-                title="Distribución de Estudiantes por Curso"
-            )
-            st.plotly_chart(fig)
+            if course_data:
+                fig = px.pie(
+                    values=list(course_data.values()),
+                    names=list(course_data.keys()),
+                    title="Distribución de Estudiantes por Curso"
+                )
+                st.plotly_chart(fig)
 
     with col2:
         # Progreso de estudiantes
@@ -182,24 +164,32 @@ def show_dashboard():
             for enrollment in enrollments:
                 status = enrollment['completion_status']
                 status_data[status] = status_data.get(status, 0) + 1
-
-            fig = px.bar(
-                x=list(status_data.keys()),
-                y=list(status_data.values()),
-                title="Estado de Completación de Cursos"
-            )
-            st.plotly_chart(fig)
+            
+            if status_data:
+                fig = px.bar(
+                    x=list(status_data.keys()),
+                    y=list(status_data.values()),
+                    title="Estado de Completación de Cursos"
+                )
+                st.plotly_chart(fig)
 
     # Últimas inscripciones
     st.subheader("Últimas Inscripciones")
     if enrollments:
         recent_enrollments = sorted(enrollments, key=lambda x: x['enrollment_date'], reverse=True)[:10]
+        
+        # Filtramos inscripciones que podrían tener datos nulos de student o course
+        valid_enrollments = [
+            e for e in recent_enrollments 
+            if e.get('students') and e.get('courses')
+        ]
+        
         enrollment_df = pd.DataFrame([{
             'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
             'Curso': e['courses']['name'],
             'Fecha': e['enrollment_date'],
             'Progreso': f"{e['progress_percentage']}%"
-        } for e in recent_enrollments])
+        } for e in valid_enrollments])
         st.dataframe(enrollment_df)
 
 def manage_courses():
@@ -285,6 +275,10 @@ def manage_enrollments():
     with st.form("nueva_inscripcion"):
         students = get_students()
         courses = get_courses()
+        
+        if not students or not courses:
+            st.warning("Debe crear estudiantes y cursos antes de poder realizar una inscripción.")
+            return
 
         col1, col2 = st.columns(2)
         with col1:
@@ -306,12 +300,19 @@ def manage_enrollments():
             # Disparar workflow de n8n para inscripción automática
             if trigger_n8n_workflow('enrollment', new_enrollment):
                 st.success("Inscripción procesada exitosamente")
+                st.rerun()
             else:
                 st.error("Error en el proceso de inscripción")
 
     # Lista de inscripciones
     enrollments = get_enrollments()
     if enrollments:
+        # Filtramos inscripciones que podrían tener datos nulos de student o course
+        valid_enrollments = [
+            e for e in enrollments 
+            if e.get('students') and e.get('courses')
+        ]
+        
         enrollment_df = pd.DataFrame([{
             'ID': e['id'],
             'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
@@ -319,8 +320,68 @@ def manage_enrollments():
             'Fecha': e['enrollment_date'],
             'Progreso': f"{e['progress_percentage']}%",
             'Estado': e['completion_status']
-        } for e in enrollments])
+        } for e in valid_enrollments])
         st.dataframe(enrollment_df)
+
+# --- NUEVO ---
+def manage_exams():
+    st.header("📝 Corrección de Exámenes con IA")
+
+    students = get_students()
+    exams = get_exams()
+
+    if not students or not exams:
+        st.warning("Asegúrate de tener estudiantes y exámenes creados para poder corregir.")
+        return
+
+    with st.form("corregir_examen"):
+        # Select student
+        student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
+        selected_student = st.selectbox("Estudiante", student_options)
+        
+        # Select exam
+        exam_options = [f"{e['id']} - {e['title']}" for e in exams]
+        selected_exam = st.selectbox("Examen", exam_options)
+        
+        # Obtenemos el objeto de examen completo para acceder al JSON de 'questions'
+        exam_obj = next(e for e in exams if e['id'] == selected_exam.split(' - ')[0])
+        
+        st.subheader("Preguntas del Examen (para referencia)")
+        st.info("Las respuestas correctas están dentro de este JSON.")
+        st.json(exam_obj['questions'])
+        
+        # Simular las respuestas del estudiante
+        st.subheader("Respuestas del Estudiante (pegar JSON)")
+        st.caption("Simula las respuestas que el estudiante envió.")
+        student_answers = st.text_area("Respuestas JSON", '{"pregunta_1": "A", "pregunta_2": "Verdadero"}')
+        
+        if st.form_submit_button("Enviar a Corrección IA"):
+            student_id = selected_student.split(' - ')[0]
+            
+            try:
+                # Parsear las respuestas JSON
+                student_answers_json = json.loads(student_answers)
+            except json.JSONDecodeError:
+                st.error("El formato de las respuestas JSON no es válido.")
+                return
+
+            # Este payload debe coincidir con lo que espera tu nodo de IA en n8n
+            # (Basado en el nodo de simulación de tu documento original)
+            payload_data = {
+                "student_id": student_id,
+                "exam_id": exam_obj['id'],
+                "questions": exam_obj['questions'], # Las preguntas/respuestas correctas de la BD
+                "answers": student_answers_json, # Las respuestas del estudiante a corregir
+                "passing_score": exam_obj.get('passing_score', 70) # Usa el puntaje de la BD o 70
+            }
+            
+            # Usamos el mismo trigger, pero con un 'workflow_type' diferente
+            if trigger_n8n_workflow('exam_correction', payload_data):
+                st.success("Examen enviado a corrección. El flujo de n8n está procesando.")
+                st.balloons()
+            else:
+                st.error("Error al enviar a n8n.")
+# --- FIN NUEVO ---
 
 def show_reports():
     st.header(" 📈  Reportes y Estadísticas")
@@ -341,9 +402,13 @@ def show_reports():
     with col2:
         # Rendimiento en exámenes
         if exam_results:
-            scores = [er['score'] for er in exam_results if er['score']]
-            fig = px.box(scores, title="Distribución de Calificaciones")
-            st.plotly_chart(fig)
+            scores = [er['score'] for er in exam_results if er.get('score')]
+            if scores:
+                fig = px.box(scores, title="Distribución de Calificaciones")
+                st.plotly_chart(fig)
+            else:
+                st.info("Aún no hay calificaciones para mostrar.")
+
 
     # Reporte detallado
     st.subheader("Reporte Detallado")
