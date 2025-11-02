@@ -79,24 +79,33 @@ def get_exam_results():
     response = supabase.table('exam_results').select('*, exams(*), students(*)').execute()
     return response.data
 
-# --- NUEVO ---
 def get_exams():
-    """Obtiene todos los exámenes"""
-    # Hacemos un join simple para obtener el título del curso al que pertenece el módulo
+    """Obtiene todos los exámenes con detalles del curso"""
     response = supabase.table('exams').select('*, course_modules(title, courses(name))').execute()
     return response.data
-# --- FIN NUEVO ---
+
+def get_modules(course_id):
+    """Obtiene los módulos para un curso específico"""
+    if not course_id:
+        return []
+    response = supabase.table('course_modules').select('*').eq('course_id', course_id).order('module_number').execute()
+    return response.data
+
+def get_exams_for_module(module_id):
+    """Obtiene los exámenes para un módulo específico"""
+    if not module_id:
+        return []
+    response = supabase.table('exams').select('*').eq('module_id', module_id).execute()
+    return response.data
 
 def main():
     st.title(" 🎓  Sistema de Gestión de Cursos Online")
 
     # Sidebar para navegación
-    # --- MODIFICADO ---
     menu = st.sidebar.selectbox(
         "Menú Principal",
         ["Dashboard", "Gestión de Cursos", "Estudiantes", "Inscripciones", "Gestión de Exámenes", "Reportes", "Configuración"]
     )
-    # --- FIN MODIFICADO ---
 
     if menu == "Dashboard":
         show_dashboard()
@@ -106,10 +115,8 @@ def main():
         manage_students()
     elif menu == "Inscripciones":
         manage_enrollments()
-    # --- NUEVO ---
     elif menu == "Gestión de Exámenes":
         manage_exams()
-    # --- FIN NUEVO ---
     elif menu == "Reportes":
         show_reports()
     elif menu == "Configuración":
@@ -133,9 +140,9 @@ def show_dashboard():
     with col3:
         st.metric("Inscripciones Activas", len([e for e in enrollments if e['completion_status'] == 'in_progress']))
     with col4:
+        # Añadido .get('score') para evitar errores si la clave no existe
         avg_score = sum([er['score'] for er in exam_results if er.get('score')]) / len(exam_results) if exam_results else 0
         st.metric("Promedio Calificaciones", f"{avg_score:.2f}")
-
 
     # Gráficos
     col1, col2 = st.columns(2)
@@ -145,6 +152,7 @@ def show_dashboard():
         if enrollments:
             course_data = {}
             for enrollment in enrollments:
+                # Añadida comprobación por si el curso fue eliminado
                 if enrollment.get('courses'):
                     course_name = enrollment['courses']['name']
                     course_data[course_name] = course_data.get(course_name, 0) + 1
@@ -193,9 +201,9 @@ def show_dashboard():
         st.dataframe(enrollment_df)
 
 def manage_courses():
-    st.header(" 📚  Gestión de Cursos")
+    st.header(" 📚  Gestión de Cursos, Módulos y Exámenes")
 
-    tab1, tab2, tab3 = st.tabs(["Ver Cursos", "Crear Curso", "Módulos"])
+    tab1, tab2, tab3 = st.tabs(["Ver Cursos", "Crear Curso", "Gestión de Módulos y Exámenes"])
 
     with tab1:
         courses = get_courses()
@@ -228,17 +236,93 @@ def manage_courses():
                 }
                 supabase.table('courses').insert(new_course).execute()
                 st.success("Curso creado exitosamente")
+                st.rerun()
 
     with tab3:
-        st.subheader("Gestión de Módulos")
+        st.subheader("Seleccionar Curso")
         courses = get_courses()
-        if courses:
-            selected_course = st.selectbox("Seleccionar Curso",
-                                           [f"{c['id']} - {c['name']}" for c in courses])
-            course_id = selected_course.split(' - ')[0]
+        if not courses:
+            st.warning("Primero debes crear un curso en la pestaña 'Crear Curso'.")
+            return
 
-            # Aquí iría la gestión de módulos específica
-            st.info("La gestión detallada de módulos se implementaría aquí.")
+        course_options = {c['name']: c['id'] for c in courses}
+        selected_course_name = st.selectbox("Selecciona un curso para gestionar", options=course_options.keys())
+        selected_course_id = course_options[selected_course_name]
+
+        st.divider()
+        
+        col_mod, col_exam = st.columns(2)
+
+        with col_mod:
+            st.subheader("Módulos del Curso")
+            modules = get_modules(selected_course_id)
+            if modules:
+                for mod in modules:
+                    st.markdown(f"**{mod['module_number']}. {mod['title']}** (ID: `{mod['id']}`)")
+            else:
+                st.info("Este curso aún no tiene módulos.")
+            
+            with st.expander("➕ Crear Nuevo Módulo"):
+                with st.form("crear_modulo", clear_on_submit=True):
+                    mod_title = st.text_input("Título del Módulo")
+                    mod_number = st.number_input("Número de Módulo (Orden)", min_value=1, step=1)
+                    mod_release = st.number_input("Día de Publicación (ej. 7)", min_value=0, step=1, help="0 = inmediato, 7 = 7 días después de la inscripción.")
+                    
+                    if st.form_submit_button("Crear Módulo"):
+                        new_module = {
+                            "course_id": selected_course_id,
+                            "title": mod_title,
+                            "module_number": mod_number,
+                            "release_day": mod_release
+                        }
+                        supabase.table('course_modules').insert(new_module).execute()
+                        st.success(f"Módulo '{mod_title}' creado.")
+                        st.rerun()
+
+        with col_exam:
+            st.subheader("Exámenes del Curso")
+            
+            if not modules:
+                st.warning("Crea un módulo primero para poder asignarle un examen.")
+                return
+
+            module_options = {f"{m['module_number']}. {m['title']}": m['id'] for m in modules}
+            selected_module_name = st.selectbox("Selecciona un módulo para ver/añadir exámenes", options=module_options.keys())
+            selected_module_id = module_options[selected_module_name]
+
+            exams = get_exams_for_module(selected_module_id)
+            if exams:
+                for ex in exams:
+                    st.markdown(f"**{ex['title']}** (ID: `{ex['id']}`)")
+            else:
+                st.info("Este módulo aún no tiene exámenes.")
+            
+            with st.expander("➕ Crear Nuevo Examen"):
+                with st.form("crear_examen", clear_on_submit=True):
+                    exam_title = st.text_input("Título del Examen")
+                    exam_score = st.number_input("Puntaje para Aprobar (ej. 70)", min_value=0, max_value=100, value=70, step=5)
+                    
+                    # Para las preguntas usamos JSON
+                    st.caption("Usa JSON para definir las preguntas y respuestas correctas.")
+                    exam_questions = st.text_area("Preguntas (JSON)", height=200, 
+                        value='[{"pregunta": "¿Qué es n8n?", "opciones": ["A", "B"], "respuesta_correcta": "A"}]')
+
+                    if st.form_submit_button("Crear Examen"):
+                        try:
+                            questions_json = json.loads(exam_questions)
+                        except json.JSONDecodeError:
+                            st.error("Error: El formato de JSON para las preguntas no es válido.")
+                            return
+                        
+                        new_exam = {
+                            "module_id": selected_module_id,
+                            "title": exam_title,
+                            "questions": questions_json, # Guardamos el JSON
+                            "passing_score": exam_score
+                        }
+                        supabase.table('exams').insert(new_exam).execute()
+                        st.success(f"Examen '{exam_title}' creado.")
+                        st.rerun()
 
 def manage_students():
     st.header(" 👥  Gestión de Estudiantes")
@@ -323,7 +407,6 @@ def manage_enrollments():
         } for e in valid_enrollments])
         st.dataframe(enrollment_df)
 
-# --- NUEVO ---
 def manage_exams():
     st.header("📝 Corrección de Exámenes con IA")
 
@@ -381,7 +464,6 @@ def manage_exams():
                 st.balloons()
             else:
                 st.error("Error al enviar a n8n.")
-# --- FIN NUEVO ---
 
 def show_reports():
     st.header(" 📈  Reportes y Estadísticas")
