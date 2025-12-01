@@ -17,6 +17,8 @@ import pingouin as pg
 import numpy as np
 from sklearn.decomposition import FactorAnalysis
 from sklearn.preprocessing import StandardScaler
+import subprocess
+import os
 
 # Configuración de la página
 st.set_page_config(
@@ -615,12 +617,10 @@ def show_validation_tests():
     de los instrumentos de recolección de datos.
     """)
 
-    tab1, tab2, tab3 = st.tabs(["🔢 Calculadora V de Aiken", "📊 Confiabilidad (Cronbach/Omega)", "📋 Ficha de Items"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔢 Calculadora V de Aiken", "📊 Confiabilidad (Cronbach/Omega)", "📋 Ficha de Items", "🦗 Pruebas de Carga (Locust)"])
 
     with tab1:
         st.subheader("Cálculo de Coeficiente V")
-        
-    
         
         col1, col2 = st.columns(2)
         with col1:
@@ -720,17 +720,121 @@ def show_validation_tests():
             
             simulated_data[f'Item{i+1}'] = item_scores
         
+        df_simulated = pd.DataFrame(simulated_data)
+        
+        if st.button("Calcular Confiabilidad"):
+            # Alfa de Cronbach
+            alpha = pg.cronbach_alpha(data=df_simulated)[0]
+            
+            # Omega de McDonald (Manual Calculation)
+            try:
+                scaler = StandardScaler()
+                df_scaled = scaler.fit_transform(df_simulated)
+                fa = FactorAnalysis(n_components=1, rotation=None)
+                fa.fit(df_scaled)
+                loadings = fa.components_[0]
+                uniquenesses = 1 - loadings**2
+                omega_total = (loadings.sum()**2) / (loadings.sum()**2 + uniquenesses.sum())
+            except Exception as e:
+                omega_total = 0
+                st.error(f"Error calculando Omega: {e}")
+
+            col_rel1, col_rel2 = st.columns(2)
+            col_rel1.metric("Alfa de Cronbach", f"{alpha:.3f}")
+            col_rel2.metric("Omega de McDonald", f"{omega_total:.3f}")
+            
+            if alpha > 0.7 and omega_total > 0.7:
+                st.success("✅ El instrumento muestra una ALTA confiabilidad.")
+            else:
+                st.warning("⚠️ La confiabilidad es moderada o baja. Revisar ítems.")
+
+    with tab3:
+        st.subheader("Ficha Técnica de Ítems")
         st.markdown("""
         Utilice esta estructura para enviar a los jueces expertos (Ingenieros y Docentes).
         """)
         st.table(df_items[["Dimensión", "Ítem"]])
 
+    with tab4:
+        st.subheader("Pruebas de Carga con Locust")
+        st.markdown("""
+        Esta prueba simula múltiples usuarios accediendo a la aplicación simultáneamente para evaluar su rendimiento.
+        """)
+
+        col_conf1, col_conf2 = st.columns(2)
+        with col_conf1:
+            users = st.number_input("Número de Usuarios", min_value=1, value=10, step=1)
+            spawn_rate = st.number_input("Tasa de Creación (usuarios/seg)", min_value=1, value=1, step=1)
+        with col_conf2:
+            duration = st.number_input("Duración de la prueba (segundos)", min_value=5, value=10, step=5)
+            host = st.text_input("Host Objetivo", value="http://localhost:8501")
+
+        if st.button("🚀 Ejecutar Prueba de Carga"):
+            with st.spinner(f"Ejecutando prueba con {users} usuarios durante {duration} segundos..."):
+                try:
+                    # Definir nombre base para los archivos CSV
+                    csv_base_name = "load_test_results"
+                    
+                    # Construir comando
+                    # python -m locust -f locustfile.py --headless -u 10 -r 1 --run-time 10s --host http://localhost:8501 --csv load_test_results
+                    cmd = [
+                        "python", "-m", "locust",
+                        "-f", "locustfile.py",
+                        "--headless",
+                        "-u", str(users),
+                        "-r", str(spawn_rate),
+                        "--run-time", f"{duration}s",
+                        "--host", host,
+                        "--csv", csv_base_name
+                    ]
+                    
+                    # Ejecutar comando
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    if result.returncode == 0:
+                        st.success("Prueba completada exitosamente.")
+                        
+                        # Leer y mostrar resultados
+                        stats_file = f"{csv_base_name}_stats.csv"
+                        if os.path.exists(stats_file):
+                            df_stats = pd.read_csv(stats_file)
+                            st.subheader("Estadísticas de Peticiones")
+                            st.dataframe(df_stats)
+                            
+                            # Métricas clave
+                            if not df_stats.empty:
+                                total_reqs = df_stats['Request Count'].sum()
+                                fail_count = df_stats['Failure Count'].sum()
+                                avg_time = df_stats['Average Response Time'].mean()
+                                
+                                m1, m2, m3 = st.columns(3)
+                                m1.metric("Total Peticiones", total_reqs)
+                                m2.metric("Fallos", fail_count)
+                                m3.metric("Tiempo Promedio (ms)", f"{avg_time:.2f}")
+                        else:
+                            st.warning("No se encontró el archivo de estadísticas generado.")
+                        
+                        # Limpieza automática de archivos CSV
+                        try:
+                            if os.path.exists(f"{csv_base_name}_stats.csv"):
+                                os.remove(f"{csv_base_name}_stats.csv")
+                            if os.path.exists(f"{csv_base_name}_history.csv"):
+                                os.remove(f"{csv_base_name}_history.csv")
+                            if os.path.exists(f"{csv_base_name}_failures.csv"):
+                                os.remove(f"{csv_base_name}_failures.csv")
+                            if os.path.exists(f"{csv_base_name}_exceptions.csv"):
+                                os.remove(f"{csv_base_name}_exceptions.csv")
+                        except Exception as e:
+                            st.warning(f"No se pudieron eliminar los archivos temporales: {e}")
+                            
+                    else:
+                        st.error("Hubo un error ejecutando la prueba.")
+                        st.code(result.stderr)
+                        
+                except Exception as e:
+                    st.error(f"Error inesperado: {e}")
+
 def show_settings():
-    st.header(" ⚙️  Configuración")
-
-    st.subheader("Configuración de n8n")
-    webhook_url = st.text_input("URL Webhook n8n", value=N8N_WEBHOOK_URL)
-
     st.subheader("Configuración de Supabase")
     st.info("Las credenciales de Supabase se configuran mediante secrets de Streamlit")
 
