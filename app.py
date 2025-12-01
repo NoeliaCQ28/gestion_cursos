@@ -577,31 +577,6 @@ def show_validation_tests():
                 "3. El sistema funciona fluidamente sin errores.",
                 "4. El tiempo de obtención de notas es rápido.", 
                 "5. El flujo de envío y recepción es automático.", 
-                "6. Los resultados están disponibles inmediatamente.",
-                "7. La calificación es imparcial y objetiva.", 
-                "8. El sistema entiende el contexto de respuestas abiertas.", 
-                "9. Me siento satisfecho usando este sistema."
-            ],
-            "Dimensión": [
-                "Usabilidad", "Usabilidad", "Usabilidad",
-                "Eficiencia", "Eficiencia", "Eficiencia",
-                "Calidad IA", "Calidad IA", "Calidad IA"
-            ]
-        }
-        
-        # Crear columnas dinámicas para los jueces (Juez 1, Juez 2...)
-        for i in range(1, num_jueces + 1):
-            items_data[f"Juez {i}"] = random.choices([4, 5], weights=[0.3, 0.7], k=9)
-
-        df_items = pd.DataFrame(items_data)
-        
-        # Editor de datos editable en Streamlit
-        edited_df = st.data_editor(df_items, use_container_width=True)
-
-        if st.button("Calcular V de Aiken"):
-            resultados = []
-            lo = 1 # Valor mínimo de la escala
-            c = escala_max # Valor máximo de la escala
             rango = c - lo
             
             for index, row in edited_df.iterrows():
