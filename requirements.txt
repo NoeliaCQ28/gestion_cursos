@@ -9,3 +9,4 @@ google-generativeai
 openpyxl
 pymupdf
 pingouin
+locust
