@@ -103,36 +103,6 @@ def get_exams_for_module(module_id):
     """Obtiene los exámenes para un módulo específico"""
     if not module_id:
         return []
-    response = supabase.table('exams').select('*').eq('module_id', module_id).execute()
-    return response.data
-
-def main():
-    st.title(" 🎓  Sistema de Gestión de Cursos Online")
-
-    # Sidebar para navegación
-    menu = st.sidebar.selectbox(
-        "Menú Principal",
-        ["Dashboard", "Gestión de Cursos", "Estudiantes", "Inscripciones", "Gestión de Exámenes", "Reportes", "Configuración"]
-    )
-
-    if menu == "Dashboard":
-        show_dashboard()
-    elif menu == "Gestión de Cursos":
-        manage_courses()
-    elif menu == "Estudiantes":
-        manage_students()
-    elif menu == "Inscripciones":
-        manage_enrollments()
-    elif menu == "Gestión de Exámenes":
-        manage_exams()
-    elif menu == "Reportes":
-        show_reports()
-    elif menu == "Configuración":
-        show_settings()
-
-def show_dashboard():
-    st.header(" 📊  Dashboard Principal")
-
     # Métricas clave
     col1, col2, col3, col4 = st.columns(4)
 
@@ -581,6 +551,112 @@ def show_reports():
         b64 = base64.b64encode(pdf_buffer.read()).decode()
         href = f'<a href="data:application/octet-stream;base64,{b64}" download="reporte_cursos.pdf">Descargar Reporte PDF</a>'
         st.markdown(href, unsafe_allow_html=True)
+
+def show_validation_tests():
+    st.header("🧪 Pruebas de Validez de Contenido (V de Aiken)")
+    
+    st.markdown("""
+    Este módulo permite calcular la validez de los instrumentos de recolección de datos 
+    utilizados en la investigación, basándose en el juicio de expertos.
+    """)
+
+    tab1, tab2 = st.tabs(["🔢 Calculadora V de Aiken", "📋 Ficha de Items"])
+
+    with tab1:
+        st.subheader("Cálculo de Coeficiente V")
+        
+        # Configuración de la prueba
+        col1, col2 = st.columns(2)
+        with col1:
+            num_jueces = st.number_input("Número de Jueces Expertos", min_value=1, value=5, step=1)
+        with col2:
+            escala_max = st.number_input("Valor Máximo de la Escala (Likert)", min_value=2, value=5)
+            # Valor mínimo asumido es 1
+
+        # Generar datos de ejemplo o cargar
+        st.write("### Matriz de Calificaciones de los Jueces")
+        st.info("Edita los valores en la tabla simulando las respuestas de los expertos (1 al 5).")
+
+        # Definición de los 9 ítems validados
+        items_data = {
+            "Ítem": [
+                "1. Navegación Intuitiva", "2. Claridad Visual", "3. Estabilidad Técnica",
+                "4. Rapidez de Resultados", "5. Automatización del Flujo", "6. Disponibilidad Inmediata",
+                "7. Objetividad IA", "8. Precisión Semántica", "9. Satisfacción Global"
+            ],
+            "Dimensión": [
+                "Usabilidad", "Usabilidad", "Usabilidad",
+                "Eficiencia", "Eficiencia", "Eficiencia",
+                "Calidad IA", "Calidad IA", "Calidad IA"
+            ]
+        }
+        
+        # Crear columnas dinámicas para los jueces (Juez 1, Juez 2...)
+        for i in range(1, num_jueces + 1):
+            # Inicializamos con 4 o 5 para simular aprobación
+            items_data[f"Juez {i}"] = [4, 5, 5, 4, 5, 5, 4, 5, 4] 
+
+        df_items = pd.DataFrame(items_data)
+        
+        # Editor de datos editable en Streamlit
+        edited_df = st.data_editor(df_items, use_container_width=True)
+
+        if st.button("Calcular V de Aiken"):
+            # Lógica del Script de Cálculo
+            # Fórmula: V = (Media - lo) / (c - 1)  o  Sum(s) / [n * (c-1)]
+            # Donde s = puntaje - lo (lo = 1)
+            
+            resultados = []
+            lo = 1 # Valor mínimo de la escala
+            c = escala_max # Valor máximo de la escala
+            rango = c - lo
+            
+            for index, row in edited_df.iterrows():
+                # Extraer solo las columnas de jueces (numéricas)
+                scores = row[[col for col in row.index if "Juez" in col]].values
+                scores = [float(x) for x in scores] # Asegurar float
+                
+                suma_s = sum([score - lo for score in scores])
+                v_aiken = suma_s / (num_jueces * rango)
+                
+                # Intervalo de confianza (opcional, simplificado aquí para la visualización)
+                veredicto = "✅ Válido" if v_aiken >= 0.80 else "⚠️ Revisar"
+                
+                resultados.append({
+                    "Ítem": row["Ítem"],
+                    "Dimensión": row["Dimensión"],
+                    "Suma (s)": suma_s,
+                    "V de Aiken": round(v_aiken, 2),
+                    "Veredicto": veredicto
+                })
+            
+            df_resultados = pd.DataFrame(resultados)
+            
+            # Mostrar Resultados
+            st.divider()
+            st.subheader("📊 Resultados del Análisis")
+            
+            # Métricas globales
+            promedio_v = df_resultados["V de Aiken"].mean()
+            col_met1, col_met2 = st.columns(2)
+            col_met1.metric("V de Aiken Promedio", f"{promedio_v:.2f}")
+            col_met2.metric("Ítems Válidos (>0.80)", f"{len(df_resultados[df_resultados['V de Aiken'] >= 0.80])}/{len(df_resultados)}")
+            
+            # Tabla coloreada
+            def highlight_valid(val):
+                color = '#d4edda' if val == '✅ Válido' else '#f8d7da'
+                return f'background-color: {color}'
+
+            st.dataframe(df_resultados.style.map(highlight_valid, subset=['Veredicto']), use_container_width=True)
+            
+            st.success(f"Conclusión: El instrumento tiene una validez de contenido de {promedio_v:.2f}, lo que indica una {{ 'Alta' if promedio_v > 0.8 else 'Baja'}} concordancia entre jueces.")
+
+    with tab2:
+        st.subheader("Matriz de Validación para Expertos")
+        st.markdown("""
+        Utilice esta estructura para enviar a los jueces expertos (Ingenieros y Docentes).
+        """)
+        st.table(df_items[["Dimensión", "Ítem"]])
 
 def show_settings():
     st.header(" ⚙️  Configuración")
