@@ -617,6 +617,8 @@ def show_validation_tests():
     with tab1:
         st.subheader("Cálculo de Coeficiente V")
         
+    
+        
         col1, col2 = st.columns(2)
         with col1:
             num_jueces = st.number_input("Número de Jueces Expertos", min_value=1, value=5, step=1)
@@ -701,9 +703,19 @@ def show_validation_tests():
         - **Omega de McDonald (ω):** Métrica más robusta recomendada en psicometría moderna.
         """)
         
-        simulated_data = {
-            f'Item{i+1}': random.choices([3, 4, 5], weights=[0.1, 0.4, 0.5], k=20) for i in range(9)
-        }
+        # Generar datos con alta consistencia interna (Latent Trait Model)
+        student_base_scores = [random.uniform(3.5, 5.0) for _ in range(20)]
+        
+        simulated_data = {}
+        for i in range(9):
+            item_scores = []
+            for base_score in student_base_scores:
+                noise = random.uniform(-0.6, 0.6)
+                score = base_score + noise
+                final_score = int(max(1, min(5, round(score))))
+                item_scores.append(final_score)
+            
+            simulated_data[f'Item{i+1}'] = item_scores
         
         df_reliability = pd.DataFrame(simulated_data)
         
