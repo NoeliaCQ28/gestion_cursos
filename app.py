@@ -618,7 +618,7 @@ def show_validation_tests():
     de los instrumentos de recolección de datos.
     """)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🔢 Calculadora V de Aiken", "📊 Confiabilidad (Cronbach/Omega)", "📋 Ficha de Items", "🦗 Pruebas de Carga (Locust)"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔢 Calculadora V de Aiken", "📊 Confiabilidad (Cronbach/Omega)", "📋 Ficha de Items", "🦗 Pruebas de Carga (Locust)", "⏱️ Tiempos de Corrección"])
 
     with tab1:
         st.subheader("Cálculo de Coeficiente V")
@@ -834,6 +834,116 @@ def show_validation_tests():
                         
                 except Exception as e:
                     st.error(f"Error inesperado: {e}")
+
+    with tab5:
+        st.subheader("⏱️ Comparativa de Tiempos de Corrección (TPC)")
+        st.markdown("Medición y comparación del tiempo promedio de corrección manual vs. inteligencia artificial.")
+
+        # Inicialización de estado
+        if 'manual_start_time' not in st.session_state:
+            st.session_state.manual_start_time = None
+        if 'manual_elapsed' not in st.session_state:
+            st.session_state.manual_elapsed = 0.0
+
+        col_manual, col_ai = st.columns(2)
+
+        with col_manual:
+            st.write("### 🖐️ Corrección Manual")
+            st.caption("Utiliza este cronómetro mientras corriges exámenes manualmente para medir tu tiempo.")
+
+            # Callbacks para el cronómetro
+            def start_timer():
+                st.session_state.manual_start_time = datetime.now()
+            
+            def stop_timer():
+                if st.session_state.manual_start_time:
+                    delta = datetime.now() - st.session_state.manual_start_time
+                    st.session_state.manual_elapsed += delta.total_seconds()
+                    st.session_state.manual_start_time = None
+
+            def reset_timer():
+                st.session_state.manual_start_time = None
+                st.session_state.manual_elapsed = 0.0
+
+            # Botones de control
+            b1, b2, b3 = st.columns(3)
+            b1.button("▶️ Iniciar", on_click=start_timer, disabled=(st.session_state.manual_start_time is not None), key='btn_start')
+            b2.button("⏹️ Detener", on_click=stop_timer, disabled=(st.session_state.manual_start_time is None), key='btn_stop')
+            b3.button("🔄 Reiniciar", on_click=reset_timer, key='btn_reset')
+
+            # Cálculo de tiempo actual si está corriendo
+            current_elapsed = st.session_state.manual_elapsed
+            if st.session_state.manual_start_time:
+                diff = (datetime.now() - st.session_state.manual_start_time).total_seconds()
+                current_elapsed += diff
+                st.warning(f"⏱️ Corriendo: {diff:.1f}s (Total: {current_elapsed:.1f}s)")
+                st.caption("Nota: El tiempo se actualiza al interactuar con la app.")
+            else:
+                st.metric("Tiempo Total Registrado", f"{current_elapsed:.2f} s")
+
+            num_exams = st.number_input("Cantidad de exámenes corregidos", min_value=1, value=1, step=1)
+            manual_avg = current_elapsed / num_exams
+            st.info(f"Promedio Manual: **{manual_avg:.2f} s/examen**")
+
+        with col_ai:
+            st.write("### 🤖 Corrección con IA")
+            st.caption("Tiempo estimado basado en logs del sistema o prueba en vivo.")
+            
+            ai_source = st.radio("Fuente del dato:", ["Ingreso Manual", "Test en Vivo (API)"], horizontal=True)
+            
+            if ai_source == "Ingreso Manual":
+                ai_avg = st.number_input("Tiempo promedio IA (segundos)", value=3.5, step=0.1)
+            else:
+                if st.button("⚡ Ejecutar Test de Velocidad API"):
+                    with st.spinner("Enviando petición de prueba a Gemini..."):
+                        try:
+                            t_start = datetime.now()
+                            # Usamos un prompt mínimo para medir latencia pura
+                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            response = model.generate_content("Responde con una sola palabra: 'Listo'")
+                            t_end = datetime.now()
+                            duration = (t_end - t_start).total_seconds()
+                            st.session_state.ai_measured_time = duration
+                            st.success(f"Respuesta recibida en {duration:.3f} segundos.")
+                        except Exception as e:
+                            st.error(f"Error en test de API: {e}")
+                
+                ai_avg = st.session_state.get('ai_measured_time', 3.5)
+                st.metric("Tiempo Medido IA", f"{ai_avg:.3f} s")
+
+        st.divider()
+        
+        if manual_avg > 0 and ai_avg > 0:
+            st.subheader("📊 Comparativa de Rendimiento")
+            
+            col_res1, col_res2 = st.columns(2)
+            
+            ahorro = manual_avg - ai_avg
+            factor = manual_avg / ai_avg if ai_avg > 0 else 0
+            
+            with col_res1:
+                st.metric("Ahorro de tiempo por examen", f"{ahorro:.2f} s", delta=f"{ahorro:.2f} s", delta_color="normal")
+            with col_res2:
+                st.metric("Factor de Aceleración", f"{factor:.1f}x", f"La IA es {factor:.1f} veces más rápida")
+            
+            # Gráfico
+            df_chart = pd.DataFrame({
+                "Método": ["Manual (Humano)", "IA (Gemini)"],
+                "Segundos por Examen": [manual_avg, ai_avg],
+                "Color": ["#FF6B6B", "#4ECDC4"]
+            })
+            
+            fig = px.bar(
+                df_chart, 
+                x="Método", 
+                y="Segundos por Examen", 
+                color="Método", 
+                text="Segundos por Examen",
+                title="Tiempo Promedio de Corrección (Menos es mejor)",
+                color_discrete_map={"Manual (Humano)": "#FF6B6B", "IA (Gemini)": "#4ECDC4"}
+            )
+            fig.update_traces(texttemplate='%{text:.2f}s', textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
 
 def show_settings():
     st.subheader("Configuración de Supabase")
