@@ -515,7 +515,7 @@ def manage_exams():
                     
                     with st.spinner("La IA está analizando y corrigiendo el examen..."):
                         try:
-                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            model = genai.GenerativeModel('gemini-pro')
                             
                             prompt = f"""
                             Actúa como un profesor experto. Tu tarea es corregir este examen.
@@ -899,7 +899,7 @@ def show_validation_tests():
                         try:
                             t_start = datetime.now()
                             # Usamos un prompt mínimo para medir latencia pura
-                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            model = genai.GenerativeModel('gemini-pro')
                             response = model.generate_content("Responde con una sola palabra: 'Listo'")
                             t_end = datetime.now()
                             duration = (t_end - t_start).total_seconds()
