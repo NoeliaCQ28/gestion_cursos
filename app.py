@@ -712,11 +712,18 @@ def show_validation_tests():
         
         if st.button("Calcular Confiabilidad"):
             try:
+                # 1. Alfa de Cronbach
                 cronbach_val = pg.cronbach_alpha(data=df_reliability)
                 alfa = cronbach_val[0]
                 
-                omega_val = pg.omega(data=df_reliability)
-                omega = omega_val[0]
+                # 2. Omega de McDonald (con manejo de errores)
+                omega = None
+                if hasattr(pg, 'omega'):
+                    try:
+                        omega_val = pg.omega(data=df_reliability)
+                        omega = omega_val[0]
+                    except Exception as e:
+                        st.warning(f"Error calculando Omega: {e}")
                 
                 st.divider()
                 st.subheader("📊 Resultados de Confiabilidad")
@@ -731,11 +738,15 @@ def show_validation_tests():
                         st.warning("⚠️ Consistencia Interna BAJA")
                         
                 with col_r2:
-                    st.metric("Omega de McDonald (ω)", f"{omega:.3f}")
-                    if omega > 0.7:
-                        st.success("✅ Consistencia Interna ROBUSTA")
+                    if omega is not None:
+                        st.metric("Omega de McDonald (ω)", f"{omega:.3f}")
+                        if omega > 0.7:
+                            st.success("✅ Consistencia Interna ROBUSTA")
+                        else:
+                            st.warning("⚠️ Consistencia Interna BAJA")
                     else:
-                        st.warning("⚠️ Consistencia Interna BAJA")
+                        st.metric("Omega de McDonald (ω)", "N/A")
+                        st.warning("Función Omega no disponible en la versión instalada de pingouin.")
                 
                 st.info("""
                 **Interpretación:**
