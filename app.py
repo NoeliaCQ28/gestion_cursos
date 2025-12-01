@@ -9,6 +9,8 @@ from supabase import create_client, Client
 import base64
 from fpdf import FPDF
 import io
+import google.generativeai as genai
+from PIL import Image
 
 # Configuración de la página
 st.set_page_config(
@@ -24,6 +26,12 @@ def init_supabase():
     supabase_key = st.secrets["SUPABASE_KEY"]
     return create_client(supabase_url, supabase_key)
 supabase = init_supabase()
+
+# Configuración de Gemini
+if "GOOGLE_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+else:
+    st.error("Falta la API Key de Google en los secrets.")
 
 # Configuración n8n
 N8N_WEBHOOK_URL = st.secrets["N8N_WEBHOOK_URL"]
@@ -434,36 +442,97 @@ def manage_exams():
         st.json(exam_obj['questions'])
         
         # Simular las respuestas del estudiante
-        st.subheader("Respuestas del Estudiante (pegar JSON)")
-        st.caption("Simula las respuestas que el estudiante envió.")
-        student_answers = st.text_area("Respuestas JSON", '{"pregunta_1": "A", "pregunta_2": "Verdadero"}')
+        st.subheader("Subir Examen Resuelto")
+        uploaded_file = st.file_uploader("Sube una imagen o PDF del examen resuelto", type=['png', 'jpg', 'jpeg', 'pdf'])
         
-        if st.form_submit_button("Enviar a Corrección IA"):
-            student_id = selected_student.split(' - ')[0]
+        if uploaded_file is not None:
+            # Mostrar imagen si es imagen
+            if uploaded_file.type.startswith('image'):
+                image = Image.open(uploaded_file)
+                st.image(image, caption='Examen subido', use_column_width=True)
             
-            try:
-                # Parsear las respuestas JSON
-                student_answers_json = json.loads(student_answers)
-            except json.JSONDecodeError:
-                st.error("El formato de las respuestas JSON no es válido.")
-                return
+            if st.form_submit_button("Corregir con IA"):
+                if "GOOGLE_API_KEY" not in st.secrets:
+                    st.error("No se ha configurado la API Key de Google.")
+                    return
 
-            # Este payload debe coincidir con lo que espera tu nodo de IA en n8n
-            # (Basado en el nodo de simulación de tu documento original)
-            payload_data = {
-                "student_id": student_id,
-                "exam_id": exam_obj['id'],
-                "questions": exam_obj['questions'], # Las preguntas/respuestas correctas de la BD
-                "answers": student_answers_json, # Las respuestas del estudiante a corregir
-                "passing_score": exam_obj.get('passing_score', 70) # Usa el puntaje de la BD o 70
-            }
-            
-            # Usamos el mismo trigger, pero con un 'workflow_type' diferente
-            if trigger_n8n_workflow('exam_correction', payload_data):
-                st.success("Examen enviado a corrección. El flujo de n8n está procesando.")
-                st.balloons()
-            else:
-                st.error("Error al enviar a n8n.")
+                student_id = selected_student.split(' - ')[0]
+                
+                with st.spinner("La IA está analizando y corrigiendo el examen..."):
+                    try:
+                        # Preparar el prompt
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        
+                        prompt = f"""
+                        Actúa como un profesor experto. Tu tarea es corregir este examen.
+                        
+                        Aquí están las preguntas y las respuestas correctas (JSON):
+                        {json.dumps(exam_obj['questions'], ensure_ascii=False)}
+                        
+                        El puntaje para aprobar es: {exam_obj.get('passing_score', 70)}
+                        
+                        Instrucciones:
+                        1. Analiza la imagen del examen resuelto por el estudiante.
+                        2. Identifica las respuestas del estudiante para cada pregunta.
+                        3. Compara con las respuestas correctas.
+                        4. Genera un JSON con el siguiente formato EXACTO (sin markdown):
+                        {{
+                            "student_answers": {{ "pregunta_id": "respuesta_detectada" }},
+                            "corrections": [
+                                {{
+                                    "question": "texto de la pregunta",
+                                    "student_answer": "respuesta detectada",
+                                    "correct_answer": "respuesta correcta",
+                                    "is_correct": boolean,
+                                    "feedback": "breve explicación"
+                                }}
+                            ],
+                            "score": puntaje_numerico_0_a_100,
+                            "passed": boolean,
+                            "general_feedback": "comentario general al estudiante"
+                        }}
+                        """
+                        
+                        # Procesar la imagen
+                        if uploaded_file.type.startswith('image'):
+                            response = model.generate_content([prompt, image])
+                        else:
+                            # TODO: Manejo de PDF (requiere conversión o uso de API específica)
+                            st.warning("Por ahora solo se procesan imágenes directamente. Para PDF se requiere un paso extra.")
+                            return
+
+                        # Extraer JSON de la respuesta
+                        response_text = response.text.replace('```json', '').replace('```', '').strip()
+                        result_json = json.loads(response_text)
+                        
+                        # Mostrar resultados
+                        st.success("¡Corrección completada!")
+                        
+                        col_res1, col_res2 = st.columns(2)
+                        with col_res1:
+                            st.metric("Calificación", f"{result_json['score']}/100")
+                        with col_res2:
+                            if result_json['passed']:
+                                st.success("APROBADO")
+                            else:
+                                st.error("REPROBADO")
+                                
+                        st.write("### Feedback General")
+                        st.info(result_json['general_feedback'])
+                        
+                        st.write("### Detalle de Corrección")
+                        for correction in result_json['corrections']:
+                            with st.expander(f"{'✅' if correction['is_correct'] else '❌'} {correction['question']}"):
+                                st.write(f"**Tu respuesta:** {correction['student_answer']}")
+                                st.write(f"**Respuesta correcta:** {correction['correct_answer']}")
+                                st.write(f"**Feedback:** {correction['feedback']}")
+
+                    except Exception as e:
+                        st.error(f"Ocurrió un error durante la corrección: {str(e)}")
+                        st.write(e)
+        else:
+             if st.form_submit_button("Corregir con IA"):
+                 st.warning("Por favor sube un archivo primero.")
 
 def show_reports():
     st.header(" 📈  Reportes y Estadísticas")

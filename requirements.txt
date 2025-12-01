@@ -5,3 +5,4 @@ supabase
 requests
 fpdf2
 python-dotenv
+google-generativeai
