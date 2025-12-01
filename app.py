@@ -14,6 +14,9 @@ from PIL import Image
 import random
 import fitz  # PyMuPDF
 import pingouin as pg
+import numpy as np
+from sklearn.decomposition import FactorAnalysis
+from sklearn.preprocessing import StandardScaler
 
 # Configuración de la página
 st.set_page_config(
@@ -717,61 +720,6 @@ def show_validation_tests():
             
             simulated_data[f'Item{i+1}'] = item_scores
         
-        df_reliability = pd.DataFrame(simulated_data)
-        
-        st.write("### Datos de la Encuesta (Simulación N=20)")
-        st.dataframe(df_reliability, use_container_width=True)
-        
-        if st.button("Calcular Confiabilidad"):
-            try:
-                # 1. Alfa de Cronbach
-                cronbach_val = pg.cronbach_alpha(data=df_reliability)
-                alfa = cronbach_val[0]
-                
-                # 2. Omega de McDonald (con manejo de errores)
-                omega = None
-                if hasattr(pg, 'omega'):
-                    try:
-                        omega_val = pg.omega(data=df_reliability)
-                        omega = omega_val[0]
-                    except Exception as e:
-                        st.warning(f"Error calculando Omega: {e}")
-                
-                st.divider()
-                st.subheader("📊 Resultados de Confiabilidad")
-                
-                col_r1, col_r2 = st.columns(2)
-                
-                with col_r1:
-                    st.metric("Alfa de Cronbach (α)", f"{alfa:.3f}")
-                    if alfa > 0.7:
-                        st.success("✅ Consistencia Interna ACEPTABLE")
-                    else:
-                        st.warning("⚠️ Consistencia Interna BAJA")
-                        
-                with col_r2:
-                    if omega is not None:
-                        st.metric("Omega de McDonald (ω)", f"{omega:.3f}")
-                        if omega > 0.7:
-                            st.success("✅ Consistencia Interna ROBUSTA")
-                        else:
-                            st.warning("⚠️ Consistencia Interna BAJA")
-                    else:
-                        st.metric("Omega de McDonald (ω)", "N/A")
-                        st.warning("Función Omega no disponible en la versión instalada de pingouin.")
-                
-                st.info("""
-                **Interpretación:**
-                - **Alfa de Cronbach**: Asume que todos los ítems miden el constructo con la misma fuerza.
-                - **Omega de McDonald**: No asume que todos los ítems contribuyen igual; es más preciso si las cargas factoriales varían.
-                """)
-                
-            except Exception as e:
-                st.error(f"Error en el cálculo: {e}")
-                st.warning("Nota: Asegúrate de que los datos tengan suficiente varianza.")
-
-    with tab3:
-        st.subheader("Matriz de Validación para Expertos")
         st.markdown("""
         Utilice esta estructura para enviar a los jueces expertos (Ingenieros y Docentes).
         """)
