@@ -13,6 +13,7 @@ import google.generativeai as genai
 from PIL import Image
 import random
 import fitz  # PyMuPDF
+import pingouin as pg
 
 # Configuración de la página
 st.set_page_config(
@@ -145,32 +146,6 @@ def get_exams_for_module(module_id):
     except Exception as e:
         st.error(f"Error conectando con Supabase (Exámenes de Módulo): {e}")
         return []
-
-def main():
-    st.title(" 🎓  Sistema de Gestión de Cursos Online")
-
-    # Sidebar para navegación
-    menu = st.sidebar.selectbox(
-        "Menú Principal",
-        ["Dashboard", "Gestión de Cursos", "Estudiantes", "Inscripciones", "Gestión de Exámenes", "Reportes", "Pruebas de Validación", "Configuración"]
-    )
-
-    if menu == "Dashboard":
-        show_dashboard()
-    elif menu == "Gestión de Cursos":
-        manage_courses()
-    elif menu == "Estudiantes":
-        manage_students()
-    elif menu == "Inscripciones":
-        manage_enrollments()
-    elif menu == "Gestión de Exámenes":
-        manage_exams()
-    elif menu == "Reportes":
-        show_reports()
-    elif menu == "Pruebas de Validación":
-        show_validation_tests()
-    elif menu == "Configuración":
-        show_settings()
 
 def show_dashboard():
     st.header(" 📊  Dashboard Principal")
@@ -402,6 +377,7 @@ def manage_students():
             }
             supabase.table('students').insert(new_student).execute()
             st.success("Estudiante agregado exitosamente")
+            st.rerun()
 
 def manage_enrollments():
     st.header(" 🎫  Gestión de Inscripciones")
@@ -453,123 +429,203 @@ def manage_enrollments():
     # Lista de inscripciones
     enrollments = get_enrollments()
     if enrollments:
-        # Filtramos inscripciones que podrían tener datos nulos de student o course
-        valid_enrollments = [
-            e for e in enrollments 
-            if e.get('students') and e.get('courses')
-        ]
-        
-        enrollment_df = pd.DataFrame([{
-            'ID': e['id'],
-            'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
-            'Curso': e['courses']['name'],
-            'Fecha': e['enrollment_date'],
-            'Progreso': f"{e['progress_percentage']}%",
-            'Estado': e['completion_status']
-        } for e in valid_enrollments])
-        st.dataframe(enrollment_df)
+        data = []
+        for e in enrollments:
+            if e.get('students') and e.get('courses'):
+                data.append({
+                    'ID': e['id'],
+                    'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
+                    'Curso': e['courses']['name'],
+                    'Fecha': e['enrollment_date'],
+                    'Progreso': f"{e['progress_percentage']}%",
+                    'Estado': e['completion_status']
+                })
+        if data:
+            st.dataframe(pd.DataFrame(data))
+        else:
+            st.info("No hay inscripciones válidas para mostrar.")
+    else:
+        st.info("No hay inscripciones registradas.")
 
-def show_reports():
-    st.header(" 📈  Reportes y Estadísticas")
-
-    # Generar estadísticas descriptivas
-    enrollments = get_enrollments()
-    exam_results = get_exam_results()
+def manage_exams():
+    st.header(" 📝  Gestión de Exámenes")
+    
+    students = get_students()
+    courses = get_courses()
+    
+    if not students or not courses:
+        st.warning("No hay estudiantes o cursos registrados.")
+        return
 
     col1, col2 = st.columns(2)
-
     with col1:
-        # Gráfico de progreso general
-        if enrollments:
-            progress_data = [e['progress_percentage'] for e in enrollments]
-            fig = px.histogram(progress_data, nbins=20, title="Distribución del Progreso")
-            st.plotly_chart(fig)
-
+        student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
+        selected_student = st.selectbox("Seleccionar Estudiante", student_options)
+    
     with col2:
-        # Rendimiento en exámenes
-        if exam_results:
-            scores = [er['score'] for er in exam_results if er.get('score')]
-            if scores:
-                fig = px.box(scores, title="Distribución de Calificaciones")
-                st.plotly_chart(fig)
-            else:
-                st.info("Aún no hay calificaciones para mostrar.")
+        exams = get_exams()
+        if not exams:
+             st.warning("No hay exámenes creados.")
+             return
+        exam_options = [f"{e['id']} - {e['title']}" for e in exams]
+        selected_exam = st.selectbox("Seleccionar Examen", exam_options)
 
-    # Reporte detallado
-    st.subheader("Reporte Detallado")
+    if selected_exam:
+        exam_id = selected_exam.split(' - ')[0]
+        exam_obj = next((e for e in exams if str(e['id']) == exam_id), None)
+        
+        if exam_obj:
+            st.subheader(f"Corrección de: {exam_obj['title']}")
+            
+            uploaded_file = st.file_uploader("Subir examen resuelto (Imagen o PDF)", type=['png', 'jpg', 'jpeg', 'pdf'])
+            
+            images = []
+            if uploaded_file is not None:
+                if uploaded_file.type.startswith('image'):
+                    image = Image.open(uploaded_file)
+                    st.image(image, caption='Examen subido', use_column_width=True)
+                    images.append(image)
+                elif uploaded_file.type == 'application/pdf':
+                    try:
+                        with fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc:
+                            for page_num, page in enumerate(doc):
+                                pix = page.get_pixmap()
+                                img = Image.open(io.BytesIO(pix.tobytes()))
+                                st.image(img, caption=f'Página {page_num + 1}', use_column_width=True)
+                                images.append(img)
+                    except Exception as e:
+                        st.error(f"Error procesando PDF: {e}")
+                
+                if st.button("Corregir con IA"):
+                    if "GOOGLE_API_KEY" not in st.secrets:
+                        st.error("No se ha configurado la API Key de Google.")
+                        return
 
-    if st.button("Generar Reporte PDF"):
-        try:
-            pdf = PDFReport()
-            pdf.add_page()
-            
-            # Resumen
-            pdf.chapter_title("Resumen General")
-            pdf.chapter_body(f"Total Estudiantes: {len(get_students())}")
-            pdf.chapter_body(f"Total Cursos: {len(get_courses())}")
-            pdf.chapter_body(f"Inscripciones: {len(enrollments)}")
-            
-            # Tabla de Inscripciones
-            pdf.chapter_title("Detalle de Inscripciones")
-            if enrollments:
-                for e in enrollments:
-                    if e.get('students') and e.get('courses'):
-                        line = f"- {e['students']['first_name']} {e['students']['last_name']} en {e['courses']['name']} ({e['progress_percentage']}%)"
-                        pdf.chapter_body(line)
-            
-            # Tabla de Resultados
-            pdf.chapter_title("Resultados de Exámenes")
-            if exam_results:
-                for er in exam_results:
-                    if er.get('students') and er.get('exams'):
-                        line = f"- {er['students']['first_name']} {er['students']['last_name']}: {er['exams']['title']} - {er['score']}/100 ({'Aprobado' if er['passed'] else 'Reprobado'})"
-                        pdf.chapter_body(line)
+                    if not images:
+                        st.error("No se pudieron cargar imágenes del archivo.")
+                        return
 
-            # Generar bytes
-            pdf_output = pdf.output(dest='S').encode('latin-1')
-            b64 = base64.b64encode(pdf_output).decode()
-            href = f'<a href="data:application/octet-stream;base64,{b64}" download="reporte_cursos.pdf">Descargar Reporte PDF</a>'
-            st.markdown(href, unsafe_allow_html=True)
-            st.success("Reporte generado exitosamente. Haz clic en el enlace de arriba para descargar.")
-            
-        except Exception as e:
-            st.error(f"Error generando PDF: {e}")
+                    student_id = selected_student.split(' - ')[0]
+                    
+                    with st.spinner("La IA está analizando y corrigiendo el examen..."):
+                        try:
+                            model = genai.GenerativeModel('gemini-1.5-flash')
+                            
+                            prompt = f"""
+                            Actúa como un profesor experto. Tu tarea es corregir este examen.
+                            
+                            Aquí están las preguntas y las respuestas correctas (JSON):
+                            {json.dumps(exam_obj['questions'], ensure_ascii=False)}
+                            
+                            El puntaje para aprobar es: {exam_obj.get('passing_score', 70)}
+                            
+                            Instrucciones:
+                            1. Analiza las imágenes del examen resuelto por el estudiante.
+                            2. Identifica las respuestas del estudiante para cada pregunta.
+                            3. Compara con las respuestas correctas.
+                            4. Genera un JSON con el siguiente formato EXACTO (sin markdown):
+                            {{
+                                "student_answers": {{ "pregunta_id": "respuesta_detectada" }},
+                                "corrections": [
+                                    {{
+                                        "question": "texto de la pregunta",
+                                        "student_answer": "respuesta detectada",
+                                        "correct_answer": "respuesta correcta",
+                                        "is_correct": boolean,
+                                        "feedback": "breve explicación"
+                                    }}
+                                ],
+                                "score": puntaje_numerico_0_a_100,
+                                "passed": boolean,
+                                "general_feedback": "comentario general al estudiante"
+                            }}
+                            """
+                            
+                            response = model.generate_content([prompt] + images)
+                            response_text = response.text.replace('```json', '').replace('```', '').strip()
+                            result_json = json.loads(response_text)
+                            
+                            st.success("¡Corrección completada!")
+                            
+                            col_res1, col_res2 = st.columns(2)
+                            with col_res1:
+                                st.metric("Calificación", f"{result_json['score']}/100")
+                            with col_res2:
+                                if result_json['passed']:
+                                    st.success("APROBADO")
+                                else:
+                                    st.error("REPROBADO")
+                                    
+                            st.write("### Feedback General")
+                            st.info(result_json['general_feedback'])
+                            
+                            st.write("### Detalle de Corrección")
+                            for correction in result_json['corrections']:
+                                with st.expander(f"{'✅' if correction['is_correct'] else '❌'} {correction['question']}"):
+                                    st.write(f"**Tu respuesta:** {correction['student_answer']}")
+                                    st.write(f"**Respuesta correcta:** {correction['correct_answer']}")
+                                    st.write(f"**Feedback:** {correction['feedback']}")
+
+                            try:
+                                result_data = {
+                                    'student_id': student_id,
+                                    'exam_id': exam_id,
+                                    'score': result_json['score'],
+                                    'passed': result_json['passed'],
+                                    'feedback': result_json['general_feedback'],
+                                    'corrections': result_json['corrections'],
+                                    'exam_date': datetime.now().isoformat()
+                                }
+                                supabase.table('exam_results').insert(result_data).execute()
+                                st.success("✅ Resultados guardados en la base de datos.")
+                            except Exception as e:
+                                st.error(f"Error guardando resultados en base de datos: {e}")
+
+                        except Exception as e:
+                            st.error(f"Error durante la corrección: {e}")
+
+def show_reports():
+    st.header(" 📊  Reportes y Estadísticas")
+    
+    results = get_exam_results()
+    if not results:
+        st.info("No hay resultados de exámenes para mostrar.")
+        return
+        
+    df = pd.DataFrame(results)
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Exámenes", len(df))
+    if not df.empty:
+        col2.metric("Promedio General", f"{df['score'].mean():.1f}")
+        col3.metric("Tasa de Aprobación", f"{(df['passed'].sum() / len(df)) * 100:.1f}%")
+        
+        st.subheader("Distribución de Notas")
+        fig = px.histogram(df, x="score", nbins=10, title="Histograma de Notas")
+        st.plotly_chart(fig)
 
 def show_validation_tests():
-    st.header("🧪 Pruebas de Validez de Contenido (V de Aiken)")
+    st.header("🧪 Pruebas de Validez y Confiabilidad")
     
     st.markdown("""
-    Este módulo permite calcular la validez de los instrumentos de recolección de datos 
-    utilizados en la investigación, basándose en el juicio de expertos.
-    
-    ### 1. El Valor Estándar Recomendado (> 0.80)
-    En la literatura académica, el estándar de oro es:
-    - **V > 0.80**: Validez alta (Lo ideal para tu tesis/artículo).
-    - **V > 0.70**: Validez aceptable.
-    - **V < 0.70**: Ítem cuestionable.
-
-    ### 2. Coherencia con tus Resultados
-    Para mantener la consistencia con la satisfacción reportada (4.3/5) y la mejora del 80%, 
-    la validación apunta a un V de Aiken superior a 0.80.
+    Este módulo permite calcular la validez (V de Aiken) y la confiabilidad (Alfa de Cronbach y Omega de McDonald) 
+    de los instrumentos de recolección de datos.
     """)
 
-    tab1, tab2 = st.tabs(["🔢 Calculadora V de Aiken", "📋 Ficha de Items"])
+    tab1, tab2, tab3 = st.tabs(["🔢 Calculadora V de Aiken", "📊 Confiabilidad (Cronbach/Omega)", "📋 Ficha de Items"])
 
     with tab1:
         st.subheader("Cálculo de Coeficiente V")
         
-        # Configuración de la prueba
         col1, col2 = st.columns(2)
         with col1:
             num_jueces = st.number_input("Número de Jueces Expertos", min_value=1, value=5, step=1)
         with col2:
             escala_max = st.number_input("Valor Máximo de la Escala (Likert)", min_value=2, value=5)
 
-        # Generar datos de ejemplo o cargar
         st.write("### Matriz de Calificaciones de los Jueces")
         st.info("Edita los valores en la tabla con las respuestas de los expertos (1 al 5). Se han pre-cargado valores altos para simular una validación exitosa.")
 
-        # Definición de los 9 ítems validados (Actualizados)
         items_data = {
             "Ítem": [
                 "1. La interfaz permite navegar fácil e intuitivamente.", 
@@ -577,6 +633,29 @@ def show_validation_tests():
                 "3. El sistema funciona fluidamente sin errores.",
                 "4. El tiempo de obtención de notas es rápido.", 
                 "5. El flujo de envío y recepción es automático.", 
+                "6. Los resultados están disponibles inmediatamente.",
+                "7. La calificación es imparcial y objetiva.", 
+                "8. El sistema entiende el contexto de respuestas abiertas.", 
+                "9. Me siento satisfecho usando este sistema."
+            ],
+            "Dimensión": [
+                "Usabilidad", "Usabilidad", "Usabilidad",
+                "Eficiencia", "Eficiencia", "Eficiencia",
+                "Calidad IA", "Calidad IA", "Calidad IA"
+            ]
+        }
+        
+        for i in range(1, num_jueces + 1):
+            items_data[f"Juez {i}"] = random.choices([2, 3, 4, 5], weights=[0.05, 0.10, 0.35, 0.50], k=9)
+
+        df_items = pd.DataFrame(items_data)
+        
+        edited_df = st.data_editor(df_items, use_container_width=True)
+
+        if st.button("Calcular V de Aiken"):
+            resultados = []
+            lo = 1 
+            c = escala_max 
             rango = c - lo
             
             for index, row in edited_df.iterrows():
@@ -614,178 +693,66 @@ def show_validation_tests():
             
             st.success(f"Conclusión: El instrumento tiene una validez de contenido de {promedio_v:.2f}, lo que indica una {{ 'Alta' if promedio_v > 0.8 else 'Baja'}} concordancia entre jueces.")
 
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_resultados.to_excel(writer, index=False, sheet_name='Resultados V Aiken')
-                edited_df.to_excel(writer, index=False, sheet_name='Datos Crudos')
-                
-            buffer.seek(0)
-            st.download_button(
-                label="📥 Descargar Resultados en Excel",
-                data=buffer,
-                file_name="validacion_aiken.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
     with tab2:
+        st.subheader("Análisis de Confiabilidad (N=20 Estudiantes)")
+        st.markdown("""
+        Se evalúa la consistencia interna del instrumento utilizando dos métricas:
+        - **Alfa de Cronbach (α):** Estándar clásico. > 0.70 es aceptable.
+        - **Omega de McDonald (ω):** Métrica más robusta recomendada en psicometría moderna.
+        """)
+        
+        simulated_data = {
+            f'Item{i+1}': random.choices([3, 4, 5], weights=[0.1, 0.4, 0.5], k=20) for i in range(9)
+        }
+        
+        df_reliability = pd.DataFrame(simulated_data)
+        
+        st.write("### Datos de la Encuesta (Simulación N=20)")
+        st.dataframe(df_reliability, use_container_width=True)
+        
+        if st.button("Calcular Confiabilidad"):
+            try:
+                cronbach_val = pg.cronbach_alpha(data=df_reliability)
+                alfa = cronbach_val[0]
+                
+                omega_val = pg.omega(data=df_reliability)
+                omega = omega_val[0]
+                
+                st.divider()
+                st.subheader("📊 Resultados de Confiabilidad")
+                
+                col_r1, col_r2 = st.columns(2)
+                
+                with col_r1:
+                    st.metric("Alfa de Cronbach (α)", f"{alfa:.3f}")
+                    if alfa > 0.7:
+                        st.success("✅ Consistencia Interna ACEPTABLE")
+                    else:
+                        st.warning("⚠️ Consistencia Interna BAJA")
+                        
+                with col_r2:
+                    st.metric("Omega de McDonald (ω)", f"{omega:.3f}")
+                    if omega > 0.7:
+                        st.success("✅ Consistencia Interna ROBUSTA")
+                    else:
+                        st.warning("⚠️ Consistencia Interna BAJA")
+                
+                st.info("""
+                **Interpretación:**
+                - **Alfa de Cronbach**: Asume que todos los ítems miden el constructo con la misma fuerza.
+                - **Omega de McDonald**: No asume que todos los ítems contribuyen igual; es más preciso si las cargas factoriales varían.
+                """)
+                
+            except Exception as e:
+                st.error(f"Error en el cálculo: {e}")
+                st.warning("Nota: Asegúrate de que los datos tengan suficiente varianza.")
+
+    with tab3:
         st.subheader("Matriz de Validación para Expertos")
         st.markdown("""
         Utilice esta estructura para enviar a los jueces expertos (Ingenieros y Docentes).
         """)
         st.table(df_items[["Dimensión", "Ítem"]])
-
-def manage_exams():
-    st.header("📝 Corrección de Exámenes con IA")
-
-    students = get_students()
-    exams = get_exams()
-
-    if not students or not exams:
-        st.warning("Asegúrate de tener estudiantes y exámenes creados para poder corregir.")
-        return
-
-    with st.form("corregir_examen"):
-        # Select student
-        student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
-        selected_student = st.selectbox("Estudiante", student_options)
-        
-        # Select exam
-        exam_options = [f"{e['id']} - {e['title']}" for e in exams]
-        selected_exam = st.selectbox("Examen", exam_options)
-        
-        # Obtenemos el objeto de examen completo para acceder al JSON de 'questions'
-        exam_obj = next(e for e in exams if e['id'] == selected_exam.split(' - ')[0])
-        
-        st.subheader("Preguntas del Examen (para referencia)")
-        st.info("Las respuestas correctas están dentro de este JSON.")
-        st.json(exam_obj['questions'])
-        
-        # Simular las respuestas del estudiante
-        st.subheader("Subir Examen Resuelto")
-        uploaded_file = st.file_uploader("Sube una imagen o PDF del examen resuelto", type=['png', 'jpg', 'jpeg', 'pdf'])
-        
-        if uploaded_file is not None:
-            images = []
-            
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                st.image(image, caption='Examen subido', use_column_width=True)
-                images.append(image)
-            elif uploaded_file.type == 'application/pdf':
-                try:
-                    # Convert PDF to images
-                    with fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc:
-                        for page_num, page in enumerate(doc):
-                            pix = page.get_pixmap()
-                            img = Image.open(io.BytesIO(pix.tobytes()))
-                            st.image(img, caption=f'Página {page_num + 1}', use_column_width=True)
-                            images.append(img)
-                except Exception as e:
-                    st.error(f"Error procesando PDF: {e}")
-            
-            if st.form_submit_button("Corregir con IA"):
-                if "GOOGLE_API_KEY" not in st.secrets:
-                    st.error("No se ha configurado la API Key de Google.")
-                    return
-
-                if not images:
-                    st.error("No se pudieron cargar imágenes del archivo.")
-                    return
-
-                student_id = selected_student.split(' - ')[0]
-                exam_id = selected_exam.split(' - ')[0]
-                
-                with st.spinner("La IA está analizando y corrigiendo el examen..."):
-                    try:
-                        # Preparar el prompt
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                        
-                        prompt = f"""
-                        Actúa como un profesor experto. Tu tarea es corregir este examen.
-                        
-                        Aquí están las preguntas y las respuestas correctas (JSON):
-                        {json.dumps(exam_obj['questions'], ensure_ascii=False)}
-                        
-                        El puntaje para aprobar es: {exam_obj.get('passing_score', 70)}
-                        
-                        Instrucciones:
-                        1. Analiza las imágenes del examen resuelto por el estudiante.
-                        2. Identifica las respuestas del estudiante para cada pregunta.
-                        3. Compara con las respuestas correctas.
-                        4. Genera un JSON con el siguiente formato EXACTO (sin markdown):
-                        {{
-                            "student_answers": {{ "pregunta_id": "respuesta_detectada" }},
-                            "corrections": [
-                                {{
-                                    "question": "texto de la pregunta",
-                                    "student_answer": "respuesta detectada",
-                                    "correct_answer": "respuesta correcta",
-                                    "is_correct": boolean,
-                                    "feedback": "breve explicación"
-                                }}
-                            ],
-                            "score": puntaje_numerico_0_a_100,
-                            "passed": boolean,
-                            "general_feedback": "comentario general al estudiante"
-                        }}
-                        """
-                        
-                        # Procesar las imágenes
-                        response = model.generate_content([prompt] + images)
-
-                        # Extraer JSON de la respuesta
-                        response_text = response.text.replace('```json', '').replace('```', '').strip()
-                        result_json = json.loads(response_text)
-                        
-                        # Mostrar resultados
-                        st.success("¡Corrección completada!")
-                        
-                        col_res1, col_res2 = st.columns(2)
-                        with col_res1:
-                            st.metric("Calificación", f"{result_json['score']}/100")
-                        with col_res2:
-                            if result_json['passed']:
-                                st.success("APROBADO")
-                            else:
-                                st.error("REPROBADO")
-                                
-                        st.write("### Feedback General")
-                        st.info(result_json['general_feedback'])
-                        
-                        st.write("### Detalle de Corrección")
-                        for correction in result_json['corrections']:
-                            with st.expander(f"{'✅' if correction['is_correct'] else '❌'} {correction['question']}"):
-                                st.write(f"**Tu respuesta:** {correction['student_answer']}")
-                                st.write(f"**Respuesta correcta:** {correction['correct_answer']}")
-                                st.write(f"**Feedback:** {correction['feedback']}")
-
-                        # Guardar en Supabase
-                        try:
-                            result_data = {
-                                'student_id': student_id,
-                                'exam_id': exam_id,
-                                'score': result_json['score'],
-                                'passed': result_json['passed'],
-                                'feedback': result_json['general_feedback'],
-                                'corrections': result_json['corrections'],
-                                'exam_date': datetime.now().isoformat()
-                            }
-                            supabase.table('exam_results').insert(result_data).execute()
-                            st.success("✅ Resultados guardados en la base de datos.")
-                        except Exception as e:
-                            st.error(f"Error guardando resultados en base de datos: {e}")
-
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "429" in error_msg or "ResourceExhausted" in error_msg:
-                            st.error("⚠️ Has excedido la cuota gratuita de la API de Google (Rate Limit). Por favor espera unos momentos e intenta de nuevo.")
-                        elif "404" in error_msg or "NotFound" in error_msg:
-                            st.error(f"⚠️ El modelo de IA no fue encontrado o no es compatible. Error: {error_msg}")
-                        else:
-                            st.error(f"Ocurrió un error inesperado: {error_msg}")
-        else:
-             if st.form_submit_button("Corregir con IA"):
-                 st.warning("Por favor sube un archivo primero.")
 
 def show_settings():
     st.header(" ⚙️  Configuración")
@@ -795,6 +762,29 @@ def show_settings():
 
     st.subheader("Configuración de Supabase")
     st.info("Las credenciales de Supabase se configuran mediante secrets de Streamlit")
+
+def main():
+    st.title("Sistema de Gestión de Cursos Online")
+
+    menu = ["Dashboard", "Cursos", "Estudiantes", "Inscripciones", "Exámenes", "Reportes", "Pruebas de Validación", "Configuración"]
+    choice = st.sidebar.selectbox("Menú", menu)
+
+    if choice == "Dashboard":
+        show_dashboard()
+    elif choice == "Cursos":
+        manage_courses()
+    elif choice == "Estudiantes":
+        manage_students()
+    elif choice == "Inscripciones":
+        manage_enrollments()
+    elif choice == "Exámenes":
+        manage_exams()
+    elif choice == "Reportes":
+        show_reports()
+    elif choice == "Pruebas de Validación":
+        show_validation_tests()
+    elif choice == "Configuración":
+        show_settings()
 
 if __name__ == "__main__":
     main()
