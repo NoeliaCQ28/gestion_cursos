@@ -22,9 +22,14 @@ st.set_page_config(
 # Configuración de Supabase
 @st.cache_resource
 def init_supabase():
-    supabase_url = st.secrets["SUPABASE_URL"]
-    supabase_key = st.secrets["SUPABASE_KEY"]
-    return create_client(supabase_url, supabase_key)
+    try:
+        supabase_url = st.secrets["SUPABASE_URL"]
+        supabase_key = st.secrets["SUPABASE_KEY"]
+        return create_client(supabase_url, supabase_key)
+    except Exception as e:
+        st.error(f"Error inicializando Supabase: {e}")
+        return None
+
 supabase = init_supabase()
 
 # Configuración de Gemini
@@ -34,7 +39,7 @@ else:
     st.error("Falta la API Key de Google en los secrets.")
 
 # Configuración n8n
-N8N_WEBHOOK_URL = st.secrets["N8N_WEBHOOK_URL"]
+N8N_WEBHOOK_URL = st.secrets.get("N8N_WEBHOOK_URL", "")
 
 class PDFReport(FPDF):
     def header(self):
@@ -69,40 +74,105 @@ def trigger_n8n_workflow(workflow_type, data):
 
 def get_courses():
     """Obtiene todos los cursos"""
-    response = supabase.table('courses').select('*').eq('is_active', True).execute()
-    return response.data
+    if not supabase: return []
+    try:
+        response = supabase.table('courses').select('*').eq('is_active', True).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Cursos): {e}")
+        return []
 
 def get_students():
     """Obtiene todos los estudiantes"""
-    response = supabase.table('students').select('*').execute()
-    return response.data
+    if not supabase: return []
+    try:
+        response = supabase.table('students').select('*').execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Estudiantes): {e}")
+        return []
 
 def get_enrollments():
     """Obtiene todas las inscripciones"""
-    response = supabase.table('enrollments').select('*, students(*), courses(*)').execute()
-    return response.data
+    if not supabase: return []
+    try:
+        response = supabase.table('enrollments').select('*, students(*), courses(*)').execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Inscripciones): {e}")
+        return []
 
 def get_exam_results():
     """Obtiene resultados de exámenes"""
-    response = supabase.table('exam_results').select('*, exams(*), students(*)').execute()
-    return response.data
+    if not supabase: return []
+    try:
+        response = supabase.table('exam_results').select('*, exams(*), students(*)').execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Resultados): {e}")
+        return []
 
 def get_exams():
     """Obtiene todos los exámenes con detalles del curso"""
-    response = supabase.table('exams').select('*, course_modules(title, courses(name))').execute()
-    return response.data
+    if not supabase: return []
+    try:
+        response = supabase.table('exams').select('*, course_modules(title, courses(name))').execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Exámenes): {e}")
+        return []
 
 def get_modules(course_id):
     """Obtiene los módulos para un curso específico"""
-    if not course_id:
+    if not supabase or not course_id:
         return []
-    response = supabase.table('course_modules').select('*').eq('course_id', course_id).order('module_number').execute()
-    return response.data
+    try:
+        response = supabase.table('course_modules').select('*').eq('course_id', course_id).order('module_number').execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Módulos): {e}")
+        return []
 
 def get_exams_for_module(module_id):
     """Obtiene los exámenes para un módulo específico"""
-    if not module_id:
+    if not supabase or not module_id:
         return []
+    try:
+        response = supabase.table('exams').select('*').eq('module_id', module_id).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error conectando con Supabase (Exámenes de Módulo): {e}")
+        return []
+
+def main():
+    st.title(" 🎓  Sistema de Gestión de Cursos Online")
+
+    # Sidebar para navegación
+    menu = st.sidebar.selectbox(
+        "Menú Principal",
+        ["Dashboard", "Gestión de Cursos", "Estudiantes", "Inscripciones", "Gestión de Exámenes", "Reportes", "Pruebas de Validación", "Configuración"]
+    )
+
+    if menu == "Dashboard":
+        show_dashboard()
+    elif menu == "Gestión de Cursos":
+        manage_courses()
+    elif menu == "Estudiantes":
+        manage_students()
+    elif menu == "Inscripciones":
+        manage_enrollments()
+    elif menu == "Gestión de Exámenes":
+        manage_exams()
+    elif menu == "Reportes":
+        show_reports()
+    elif menu == "Pruebas de Validación":
+        show_validation_tests()
+    elif menu == "Configuración":
+        show_settings()
+
+def show_dashboard():
+    st.header(" 📊  Dashboard Principal")
+
     # Métricas clave
     col1, col2, col3, col4 = st.columns(4)
 
@@ -170,6 +240,19 @@ def get_exams_for_module(module_id):
             if e.get('students') and e.get('courses')
         ]
         
+        enrollment_df = pd.DataFrame([{
+            'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
+            'Curso': e['courses']['name'],
+            'Fecha': e['enrollment_date'],
+            'Progreso': f"{e['progress_percentage']}%"
+        } for e in valid_enrollments])
+        st.dataframe(enrollment_df)
+
+def manage_courses():
+    st.header(" 📚  Gestión de Cursos, Módulos y Exámenes")
+
+    tab1, tab2, tab3 = st.tabs(["Ver Cursos", "Crear Curso", "Gestión de Módulos y Exámenes"])
+
     with tab1:
         courses = get_courses()
         if courses:
