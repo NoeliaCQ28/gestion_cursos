@@ -170,19 +170,6 @@ def get_exams_for_module(module_id):
             if e.get('students') and e.get('courses')
         ]
         
-        enrollment_df = pd.DataFrame([{
-            'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
-            'Curso': e['courses']['name'],
-            'Fecha': e['enrollment_date'],
-            'Progreso': f"{e['progress_percentage']}%"
-        } for e in valid_enrollments])
-        st.dataframe(enrollment_df)
-
-def manage_courses():
-    st.header(" 📚  Gestión de Cursos, Módulos y Exámenes")
-
-    tab1, tab2, tab3 = st.tabs(["Ver Cursos", "Crear Curso", "Gestión de Módulos y Exámenes"])
-
     with tab1:
         courses = get_courses()
         if courses:
