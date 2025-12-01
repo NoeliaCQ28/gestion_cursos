@@ -12,6 +12,7 @@ import io
 import google.generativeai as genai
 from PIL import Image
 import random
+import fitz  # PyMuPDF
 
 # Configuración de la página
 st.set_page_config(
@@ -363,10 +364,11 @@ def manage_courses():
                             st.error("Error: El formato de JSON para las preguntas no es válido.")
                             return
                         
+                        # Guardar examen
                         new_exam = {
                             "module_id": selected_module_id,
                             "title": exam_title,
-                            "questions": questions_json, # Guardamos el JSON
+                            "questions": questions_json,
                             "passing_score": exam_score
                         }
                         supabase.table('exams').insert(new_exam).execute()
@@ -432,10 +434,21 @@ def manage_enrollments():
 
             # Disparar workflow de n8n para inscripción automática
             if trigger_n8n_workflow('enrollment', new_enrollment):
-                st.success("Inscripción procesada exitosamente")
+                st.success("Inscripción procesada exitosamente (vía n8n)")
                 st.rerun()
             else:
-                st.error("Error en el proceso de inscripción")
+                # Plan B: Guardado directo en Supabase si n8n falla
+                try:
+                    # Añadir campos por defecto necesarios para la tabla enrollments
+                    new_enrollment['enrollment_date'] = datetime.now().isoformat()
+                    new_enrollment['progress_percentage'] = 0
+                    new_enrollment['completion_status'] = 'in_progress'
+                    
+                    supabase.table('enrollments').insert(new_enrollment).execute()
+                    st.success("Inscripción procesada exitosamente (vía Supabase directo - Plan B)")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error en el proceso de inscripción (n8n y Supabase fallaron): {e}")
 
     # Lista de inscripciones
     enrollments = get_enrollments()
@@ -455,130 +468,6 @@ def manage_enrollments():
             'Estado': e['completion_status']
         } for e in valid_enrollments])
         st.dataframe(enrollment_df)
-
-def manage_exams():
-    st.header("📝 Corrección de Exámenes con IA")
-
-    students = get_students()
-    exams = get_exams()
-
-    if not students or not exams:
-        st.warning("Asegúrate de tener estudiantes y exámenes creados para poder corregir.")
-        return
-
-    with st.form("corregir_examen"):
-        # Select student
-        student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
-        selected_student = st.selectbox("Estudiante", student_options)
-        
-        # Select exam
-        exam_options = [f"{e['id']} - {e['title']}" for e in exams]
-        selected_exam = st.selectbox("Examen", exam_options)
-        
-        # Obtenemos el objeto de examen completo para acceder al JSON de 'questions'
-        exam_obj = next(e for e in exams if e['id'] == selected_exam.split(' - ')[0])
-        
-        st.subheader("Preguntas del Examen (para referencia)")
-        st.info("Las respuestas correctas están dentro de este JSON.")
-        st.json(exam_obj['questions'])
-        
-        # Simular las respuestas del estudiante
-        st.subheader("Subir Examen Resuelto")
-        uploaded_file = st.file_uploader("Sube una imagen o PDF del examen resuelto", type=['png', 'jpg', 'jpeg', 'pdf'])
-        
-        if uploaded_file is not None:
-            # Mostrar imagen si es imagen
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                st.image(image, caption='Examen subido', use_column_width=True)
-            
-            if st.form_submit_button("Corregir con IA"):
-                if "GOOGLE_API_KEY" not in st.secrets:
-                    st.error("No se ha configurado la API Key de Google.")
-                    return
-
-                student_id = selected_student.split(' - ')[0]
-                
-                with st.spinner("La IA está analizando y corrigiendo el examen..."):
-                    try:
-                        # Preparar el prompt
-                        model = genai.GenerativeModel('gemini-3-pro-image-preview')
-                        
-                        prompt = f"""
-                        Actúa como un profesor experto. Tu tarea es corregir este examen.
-                        
-                        Aquí están las preguntas y las respuestas correctas (JSON):
-                        {json.dumps(exam_obj['questions'], ensure_ascii=False)}
-                        
-                        El puntaje para aprobar es: {exam_obj.get('passing_score', 70)}
-                        
-                        Instrucciones:
-                        1. Analiza la imagen del examen resuelto por el estudiante.
-                        2. Identifica las respuestas del estudiante para cada pregunta.
-                        3. Compara con las respuestas correctas.
-                        4. Genera un JSON con el siguiente formato EXACTO (sin markdown):
-                        {{
-                            "student_answers": {{ "pregunta_id": "respuesta_detectada" }},
-                            "corrections": [
-                                {{
-                                    "question": "texto de la pregunta",
-                                    "student_answer": "respuesta detectada",
-                                    "correct_answer": "respuesta correcta",
-                                    "is_correct": boolean,
-                                    "feedback": "breve explicación"
-                                }}
-                            ],
-                            "score": puntaje_numerico_0_a_100,
-                            "passed": boolean,
-                            "general_feedback": "comentario general al estudiante"
-                        }}
-                        """
-                        
-                        # Procesar la imagen
-                        if uploaded_file.type.startswith('image'):
-                            response = model.generate_content([prompt, image])
-                        else:
-                            # TODO: Manejo de PDF (requiere conversión o uso de API específica)
-                            st.warning("Por ahora solo se procesan imágenes directamente. Para PDF se requiere un paso extra.")
-                            return
-
-                        # Extraer JSON de la respuesta
-                        response_text = response.text.replace('```json', '').replace('```', '').strip()
-                        result_json = json.loads(response_text)
-                        
-                        # Mostrar resultados
-                        st.success("¡Corrección completada!")
-                        
-                        col_res1, col_res2 = st.columns(2)
-                        with col_res1:
-                            st.metric("Calificación", f"{result_json['score']}/100")
-                        with col_res2:
-                            if result_json['passed']:
-                                st.success("APROBADO")
-                            else:
-                                st.error("REPROBADO")
-                                
-                        st.write("### Feedback General")
-                        st.info(result_json['general_feedback'])
-                        
-                        st.write("### Detalle de Corrección")
-                        for correction in result_json['corrections']:
-                            with st.expander(f"{'✅' if correction['is_correct'] else '❌'} {correction['question']}"):
-                                st.write(f"**Tu respuesta:** {correction['student_answer']}")
-                                st.write(f"**Respuesta correcta:** {correction['correct_answer']}")
-                                st.write(f"**Feedback:** {correction['feedback']}")
-
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "429" in error_msg or "ResourceExhausted" in error_msg:
-                            st.error("⚠️ Has excedido la cuota gratuita de la API de Google (Rate Limit). Por favor espera unos momentos e intenta de nuevo.")
-                        elif "404" in error_msg or "NotFound" in error_msg:
-                            st.error(f"⚠️ El modelo de IA no fue encontrado o no es compatible. Error: {error_msg}")
-                        else:
-                            st.error(f"Ocurrió un error inesperado: {error_msg}")
-        else:
-             if st.form_submit_button("Corregir con IA"):
-                 st.warning("Por favor sube un archivo primero.")
 
 def show_reports():
     st.header(" 📈  Reportes y Estadísticas")
@@ -605,231 +494,46 @@ def show_reports():
                 st.plotly_chart(fig)
             else:
                 st.info("Aún no hay calificaciones para mostrar.")
-            st.warning("Debe crear estudiantes y cursos antes de poder realizar una inscripción.")
-            return
-
-        col1, col2 = st.columns(2)
-        with col1:
-            student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
-            selected_student = st.selectbox("Estudiante", student_options)
-        with col2:
-            course_options = [f"{c['id']} - {c['name']}" for c in courses]
-            selected_course = st.selectbox("Curso", course_options)
-
-        if st.form_submit_button("Inscribir Estudiante"):
-            student_id = selected_student.split(' - ')[0]
-            course_id = selected_course.split(' - ')[0]
-
-            new_enrollment = {
-                'student_id': student_id,
-                'course_id': course_id
-            }
-
-            # Disparar workflow de n8n para inscripción automática
-            if trigger_n8n_workflow('enrollment', new_enrollment):
-                st.success("Inscripción procesada exitosamente")
-                st.rerun()
-            else:
-                st.error("Error en el proceso de inscripción")
-
-    # Lista de inscripciones
-    enrollments = get_enrollments()
-    if enrollments:
-        # Filtramos inscripciones que podrían tener datos nulos de student o course
-        valid_enrollments = [
-            e for e in enrollments 
-            if e.get('students') and e.get('courses')
-        ]
-        
-        enrollment_df = pd.DataFrame([{
-            'ID': e['id'],
-            'Estudiante': f"{e['students']['first_name']} {e['students']['last_name']}",
-            'Curso': e['courses']['name'],
-            'Fecha': e['enrollment_date'],
-            'Progreso': f"{e['progress_percentage']}%",
-            'Estado': e['completion_status']
-        } for e in valid_enrollments])
-        st.dataframe(enrollment_df)
-
-def manage_exams():
-    st.header("📝 Corrección de Exámenes con IA")
-
-    students = get_students()
-    exams = get_exams()
-
-    if not students or not exams:
-        st.warning("Asegúrate de tener estudiantes y exámenes creados para poder corregir.")
-        return
-
-    with st.form("corregir_examen"):
-        # Select student
-        student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
-        selected_student = st.selectbox("Estudiante", student_options)
-        
-        # Select exam
-        exam_options = [f"{e['id']} - {e['title']}" for e in exams]
-        selected_exam = st.selectbox("Examen", exam_options)
-        
-        # Obtenemos el objeto de examen completo para acceder al JSON de 'questions'
-        exam_obj = next(e for e in exams if e['id'] == selected_exam.split(' - ')[0])
-        
-        st.subheader("Preguntas del Examen (para referencia)")
-        st.info("Las respuestas correctas están dentro de este JSON.")
-        st.json(exam_obj['questions'])
-        
-        # Simular las respuestas del estudiante
-        st.subheader("Subir Examen Resuelto")
-        uploaded_file = st.file_uploader("Sube una imagen o PDF del examen resuelto", type=['png', 'jpg', 'jpeg', 'pdf'])
-        
-        if uploaded_file is not None:
-            # Mostrar imagen si es imagen
-            if uploaded_file.type.startswith('image'):
-                image = Image.open(uploaded_file)
-                st.image(image, caption='Examen subido', use_column_width=True)
-            
-            if st.form_submit_button("Corregir con IA"):
-                if "GOOGLE_API_KEY" not in st.secrets:
-                    st.error("No se ha configurado la API Key de Google.")
-                    return
-
-                student_id = selected_student.split(' - ')[0]
-                
-                with st.spinner("La IA está analizando y corrigiendo el examen..."):
-                    try:
-                        # Preparar el prompt
-                        model = genai.GenerativeModel('gemini-3-pro-image-preview')
-                        
-                        prompt = f"""
-                        Actúa como un profesor experto. Tu tarea es corregir este examen.
-                        
-                        Aquí están las preguntas y las respuestas correctas (JSON):
-                        {json.dumps(exam_obj['questions'], ensure_ascii=False)}
-                        
-                        El puntaje para aprobar es: {exam_obj.get('passing_score', 70)}
-                        
-                        Instrucciones:
-                        1. Analiza la imagen del examen resuelto por el estudiante.
-                        2. Identifica las respuestas del estudiante para cada pregunta.
-                        3. Compara con las respuestas correctas.
-                        4. Genera un JSON con el siguiente formato EXACTO (sin markdown):
-                        {{
-                            "student_answers": {{ "pregunta_id": "respuesta_detectada" }},
-                            "corrections": [
-                                {{
-                                    "question": "texto de la pregunta",
-                                    "student_answer": "respuesta detectada",
-                                    "correct_answer": "respuesta correcta",
-                                    "is_correct": boolean,
-                                    "feedback": "breve explicación"
-                                }}
-                            ],
-                            "score": puntaje_numerico_0_a_100,
-                            "passed": boolean,
-                            "general_feedback": "comentario general al estudiante"
-                        }}
-                        """
-                        
-                        # Procesar la imagen
-                        if uploaded_file.type.startswith('image'):
-                            response = model.generate_content([prompt, image])
-                        else:
-                            # TODO: Manejo de PDF (requiere conversión o uso de API específica)
-                            st.warning("Por ahora solo se procesan imágenes directamente. Para PDF se requiere un paso extra.")
-                            return
-
-                        # Extraer JSON de la respuesta
-                        response_text = response.text.replace('```json', '').replace('```', '').strip()
-                        result_json = json.loads(response_text)
-                        
-                        # Mostrar resultados
-                        st.success("¡Corrección completada!")
-                        
-                        col_res1, col_res2 = st.columns(2)
-                        with col_res1:
-                            st.metric("Calificación", f"{result_json['score']}/100")
-                        with col_res2:
-                            if result_json['passed']:
-                                st.success("APROBADO")
-                            else:
-                                st.error("REPROBADO")
-                                
-                        st.write("### Feedback General")
-                        st.info(result_json['general_feedback'])
-                        
-                        st.write("### Detalle de Corrección")
-                        for correction in result_json['corrections']:
-                            with st.expander(f"{'✅' if correction['is_correct'] else '❌'} {correction['question']}"):
-                                st.write(f"**Tu respuesta:** {correction['student_answer']}")
-                                st.write(f"**Respuesta correcta:** {correction['correct_answer']}")
-                                st.write(f"**Feedback:** {correction['feedback']}")
-
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "429" in error_msg or "ResourceExhausted" in error_msg:
-                            st.error("⚠️ Has excedido la cuota gratuita de la API de Google (Rate Limit). Por favor espera unos momentos e intenta de nuevo.")
-                        elif "404" in error_msg or "NotFound" in error_msg:
-                            st.error(f"⚠️ El modelo de IA no fue encontrado o no es compatible. Error: {error_msg}")
-                        else:
-                            st.error(f"Ocurrió un error inesperado: {error_msg}")
-        else:
-             if st.form_submit_button("Corregir con IA"):
-                 st.warning("Por favor sube un archivo primero.")
-
-def show_reports():
-    st.header(" 📈  Reportes y Estadísticas")
-
-    # Generar estadísticas descriptivas
-    enrollments = get_enrollments()
-    exam_results = get_exam_results()
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        # Gráfico de progreso general
-        if enrollments:
-            progress_data = [e['progress_percentage'] for e in enrollments]
-            fig = px.histogram(progress_data, nbins=20, title="Distribución del Progreso")
-            st.plotly_chart(fig)
-
-    with col2:
-        # Rendimiento en exámenes
-        if exam_results:
-            scores = [er['score'] for er in exam_results if er.get('score')]
-            if scores:
-                fig = px.box(scores, title="Distribución de Calificaciones")
-                st.plotly_chart(fig)
-            else:
-                st.info("Aún no hay calificaciones para mostrar.")
-
 
     # Reporte detallado
     st.subheader("Reporte Detallado")
 
     if st.button("Generar Reporte PDF"):
-        # pdf = generate_pdf_report() # generate_pdf_report is not defined in the snippet I saw, assuming it exists or I should comment it out if it causes error. 
-        # Wait, I saw generate_pdf_report being called in the previous file content. 
-        # But I don't see the definition of generate_pdf_report in the file. 
-        # Ah, I see `class PDFReport(FPDF)` but not the function `generate_pdf_report`.
-        # It might be defined elsewhere or I missed it.
-        # I will assume it exists as it was there before.
-        # Actually, looking at previous `view_file` outputs, I don't see `def generate_pdf_report`.
-        # It might have been missing all along or I missed it. 
-        # I will comment it out for now to avoid NameError if it doesn't exist, or just leave it if I trust it's there.
-        # The user's code had it. I will leave it but if it fails I'll know why.
-        # Actually, I'll check if I can see it. I can't see it in the previous view.
-        # I'll just restore what was there.
-        pass
+        try:
+            pdf = PDFReport()
+            pdf.add_page()
+            
+            # Resumen
+            pdf.chapter_title("Resumen General")
+            pdf.chapter_body(f"Total Estudiantes: {len(get_students())}")
+            pdf.chapter_body(f"Total Cursos: {len(get_courses())}")
+            pdf.chapter_body(f"Inscripciones: {len(enrollments)}")
+            
+            # Tabla de Inscripciones
+            pdf.chapter_title("Detalle de Inscripciones")
+            if enrollments:
+                for e in enrollments:
+                    if e.get('students') and e.get('courses'):
+                        line = f"- {e['students']['first_name']} {e['students']['last_name']} en {e['courses']['name']} ({e['progress_percentage']}%)"
+                        pdf.chapter_body(line)
+            
+            # Tabla de Resultados
+            pdf.chapter_title("Resultados de Exámenes")
+            if exam_results:
+                for er in exam_results:
+                    if er.get('students') and er.get('exams'):
+                        line = f"- {er['students']['first_name']} {er['students']['last_name']}: {er['exams']['title']} - {er['score']}/100 ({'Aprobado' if er['passed'] else 'Reprobado'})"
+                        pdf.chapter_body(line)
 
-        # Guardar PDF en buffer
-        # pdf_buffer = io.BytesIO()
-        # pdf.output(pdf_buffer)
-        # pdf_buffer.seek(0)
-
-        # Crear botón de descarga
-        # b64 = base64.b64encode(pdf_buffer.read()).decode()
-        # href = f'<a href="data:application/octet-stream;base64,{b64}" download="reporte_cursos.pdf">Descargar Reporte PDF</a>'
-        # st.markdown(href, unsafe_allow_html=True)
-        st.info("Funcionalidad de PDF pendiente de implementación completa.")
+            # Generar bytes
+            pdf_output = pdf.output(dest='S').encode('latin-1')
+            b64 = base64.b64encode(pdf_output).decode()
+            href = f'<a href="data:application/octet-stream;base64,{b64}" download="reporte_cursos.pdf">Descargar Reporte PDF</a>'
+            st.markdown(href, unsafe_allow_html=True)
+            st.success("Reporte generado exitosamente. Haz clic en el enlace de arriba para descargar.")
+            
+        except Exception as e:
+            st.error(f"Error generando PDF: {e}")
 
 def show_validation_tests():
     st.header("🧪 Pruebas de Validez de Contenido (V de Aiken)")
@@ -860,7 +564,6 @@ def show_validation_tests():
             num_jueces = st.number_input("Número de Jueces Expertos", min_value=1, value=5, step=1)
         with col2:
             escala_max = st.number_input("Valor Máximo de la Escala (Likert)", min_value=2, value=5)
-            # Valor mínimo asumido es 1
 
         # Generar datos de ejemplo o cargar
         st.write("### Matriz de Calificaciones de los Jueces")
@@ -888,8 +591,6 @@ def show_validation_tests():
         
         # Crear columnas dinámicas para los jueces (Juez 1, Juez 2...)
         for i in range(1, num_jueces + 1):
-            # Generamos valores aleatorios entre 4 y 5 para asegurar V > 0.80
-            # Weights: 30% chance of 4, 70% chance of 5 to average ~4.7
             items_data[f"Juez {i}"] = random.choices([4, 5], weights=[0.3, 0.7], k=9)
 
         df_items = pd.DataFrame(items_data)
@@ -898,24 +599,18 @@ def show_validation_tests():
         edited_df = st.data_editor(df_items, use_container_width=True)
 
         if st.button("Calcular V de Aiken"):
-            # Lógica del Script de Cálculo
-            # Fórmula: V = (Media - lo) / (c - 1)  o  Sum(s) / [n * (c-1)]
-            # Donde s = puntaje - lo (lo = 1)
-            
             resultados = []
             lo = 1 # Valor mínimo de la escala
             c = escala_max # Valor máximo de la escala
             rango = c - lo
             
             for index, row in edited_df.iterrows():
-                # Extraer solo las columnas de jueces (numéricas)
                 scores = row[[col for col in row.index if "Juez" in col]].values
-                scores = [float(x) for x in scores] # Asegurar float
+                scores = [float(x) for x in scores]
                 
                 suma_s = sum([score - lo for score in scores])
                 v_aiken = suma_s / (num_jueces * rango)
                 
-                # Intervalo de confianza (opcional, simplificado aquí para la visualización)
                 veredicto = "✅ Válido" if v_aiken >= 0.80 else "⚠️ Revisar"
                 
                 resultados.append({
@@ -928,17 +623,14 @@ def show_validation_tests():
             
             df_resultados = pd.DataFrame(resultados)
             
-            # Mostrar Resultados
             st.divider()
             st.subheader("📊 Resultados del Análisis")
             
-            # Métricas globales
             promedio_v = df_resultados["V de Aiken"].mean()
             col_met1, col_met2 = st.columns(2)
             col_met1.metric("V de Aiken Promedio", f"{promedio_v:.2f}")
             col_met2.metric("Ítems Válidos (>0.80)", f"{len(df_resultados[df_resultados['V de Aiken'] >= 0.80])}/{len(df_resultados)}")
             
-            # Tabla coloreada
             def highlight_valid(val):
                 color = '#d4edda' if val == '✅ Válido' else '#f8d7da'
                 return f'background-color: {color}'
@@ -947,7 +639,6 @@ def show_validation_tests():
             
             st.success(f"Conclusión: El instrumento tiene una validez de contenido de {promedio_v:.2f}, lo que indica una {{ 'Alta' if promedio_v > 0.8 else 'Baja'}} concordancia entre jueces.")
 
-            # Botón de descarga Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_resultados.to_excel(writer, index=False, sheet_name='Resultados V Aiken')
@@ -967,6 +658,159 @@ def show_validation_tests():
         Utilice esta estructura para enviar a los jueces expertos (Ingenieros y Docentes).
         """)
         st.table(df_items[["Dimensión", "Ítem"]])
+
+def manage_exams():
+    st.header("📝 Corrección de Exámenes con IA")
+
+    students = get_students()
+    exams = get_exams()
+
+    if not students or not exams:
+        st.warning("Asegúrate de tener estudiantes y exámenes creados para poder corregir.")
+        return
+
+    with st.form("corregir_examen"):
+        # Select student
+        student_options = [f"{s['id']} - {s['first_name']} {s['last_name']}" for s in students]
+        selected_student = st.selectbox("Estudiante", student_options)
+        
+        # Select exam
+        exam_options = [f"{e['id']} - {e['title']}" for e in exams]
+        selected_exam = st.selectbox("Examen", exam_options)
+        
+        # Obtenemos el objeto de examen completo para acceder al JSON de 'questions'
+        exam_obj = next(e for e in exams if e['id'] == selected_exam.split(' - ')[0])
+        
+        st.subheader("Preguntas del Examen (para referencia)")
+        st.info("Las respuestas correctas están dentro de este JSON.")
+        st.json(exam_obj['questions'])
+        
+        # Simular las respuestas del estudiante
+        st.subheader("Subir Examen Resuelto")
+        uploaded_file = st.file_uploader("Sube una imagen o PDF del examen resuelto", type=['png', 'jpg', 'jpeg', 'pdf'])
+        
+        if uploaded_file is not None:
+            images = []
+            
+            if uploaded_file.type.startswith('image'):
+                image = Image.open(uploaded_file)
+                st.image(image, caption='Examen subido', use_column_width=True)
+                images.append(image)
+            elif uploaded_file.type == 'application/pdf':
+                try:
+                    # Convert PDF to images
+                    with fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc:
+                        for page_num, page in enumerate(doc):
+                            pix = page.get_pixmap()
+                            img = Image.open(io.BytesIO(pix.tobytes()))
+                            st.image(img, caption=f'Página {page_num + 1}', use_column_width=True)
+                            images.append(img)
+                except Exception as e:
+                    st.error(f"Error procesando PDF: {e}")
+            
+            if st.form_submit_button("Corregir con IA"):
+                if "GOOGLE_API_KEY" not in st.secrets:
+                    st.error("No se ha configurado la API Key de Google.")
+                    return
+
+                if not images:
+                    st.error("No se pudieron cargar imágenes del archivo.")
+                    return
+
+                student_id = selected_student.split(' - ')[0]
+                exam_id = selected_exam.split(' - ')[0]
+                
+                with st.spinner("La IA está analizando y corrigiendo el examen..."):
+                    try:
+                        # Preparar el prompt
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        
+                        prompt = f"""
+                        Actúa como un profesor experto. Tu tarea es corregir este examen.
+                        
+                        Aquí están las preguntas y las respuestas correctas (JSON):
+                        {json.dumps(exam_obj['questions'], ensure_ascii=False)}
+                        
+                        El puntaje para aprobar es: {exam_obj.get('passing_score', 70)}
+                        
+                        Instrucciones:
+                        1. Analiza las imágenes del examen resuelto por el estudiante.
+                        2. Identifica las respuestas del estudiante para cada pregunta.
+                        3. Compara con las respuestas correctas.
+                        4. Genera un JSON con el siguiente formato EXACTO (sin markdown):
+                        {{
+                            "student_answers": {{ "pregunta_id": "respuesta_detectada" }},
+                            "corrections": [
+                                {{
+                                    "question": "texto de la pregunta",
+                                    "student_answer": "respuesta detectada",
+                                    "correct_answer": "respuesta correcta",
+                                    "is_correct": boolean,
+                                    "feedback": "breve explicación"
+                                }}
+                            ],
+                            "score": puntaje_numerico_0_a_100,
+                            "passed": boolean,
+                            "general_feedback": "comentario general al estudiante"
+                        }}
+                        """
+                        
+                        # Procesar las imágenes
+                        response = model.generate_content([prompt] + images)
+
+                        # Extraer JSON de la respuesta
+                        response_text = response.text.replace('```json', '').replace('```', '').strip()
+                        result_json = json.loads(response_text)
+                        
+                        # Mostrar resultados
+                        st.success("¡Corrección completada!")
+                        
+                        col_res1, col_res2 = st.columns(2)
+                        with col_res1:
+                            st.metric("Calificación", f"{result_json['score']}/100")
+                        with col_res2:
+                            if result_json['passed']:
+                                st.success("APROBADO")
+                            else:
+                                st.error("REPROBADO")
+                                
+                        st.write("### Feedback General")
+                        st.info(result_json['general_feedback'])
+                        
+                        st.write("### Detalle de Corrección")
+                        for correction in result_json['corrections']:
+                            with st.expander(f"{'✅' if correction['is_correct'] else '❌'} {correction['question']}"):
+                                st.write(f"**Tu respuesta:** {correction['student_answer']}")
+                                st.write(f"**Respuesta correcta:** {correction['correct_answer']}")
+                                st.write(f"**Feedback:** {correction['feedback']}")
+
+                        # Guardar en Supabase
+                        try:
+                            result_data = {
+                                'student_id': student_id,
+                                'exam_id': exam_id,
+                                'score': result_json['score'],
+                                'passed': result_json['passed'],
+                                'feedback': result_json['general_feedback'],
+                                'corrections': result_json['corrections'],
+                                'exam_date': datetime.now().isoformat()
+                            }
+                            supabase.table('exam_results').insert(result_data).execute()
+                            st.success("✅ Resultados guardados en la base de datos.")
+                        except Exception as e:
+                            st.error(f"Error guardando resultados en base de datos: {e}")
+
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "429" in error_msg or "ResourceExhausted" in error_msg:
+                            st.error("⚠️ Has excedido la cuota gratuita de la API de Google (Rate Limit). Por favor espera unos momentos e intenta de nuevo.")
+                        elif "404" in error_msg or "NotFound" in error_msg:
+                            st.error(f"⚠️ El modelo de IA no fue encontrado o no es compatible. Error: {error_msg}")
+                        else:
+                            st.error(f"Ocurrió un error inesperado: {error_msg}")
+        else:
+             if st.form_submit_button("Corregir con IA"):
+                 st.warning("Por favor sube un archivo primero.")
 
 def show_settings():
     st.header(" ⚙️  Configuración")
