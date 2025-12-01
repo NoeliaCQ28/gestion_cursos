@@ -19,6 +19,7 @@ from sklearn.decomposition import FactorAnalysis
 from sklearn.preprocessing import StandardScaler
 import subprocess
 import os
+import sys
 
 # Configuración de la página
 st.set_page_config(
@@ -778,7 +779,7 @@ def show_validation_tests():
                     # Construir comando
                     # python -m locust -f locustfile.py --headless -u 10 -r 1 --run-time 10s --host http://localhost:8501 --csv load_test_results
                     cmd = [
-                        "python", "-m", "locust",
+                        sys.executable, "-m", "locust",
                         "-f", "locustfile.py",
                         "--headless",
                         "-u", str(users),
