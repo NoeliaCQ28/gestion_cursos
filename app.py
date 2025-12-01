@@ -461,7 +461,7 @@ def manage_exams():
                 with st.spinner("La IA está analizando y corrigiendo el examen..."):
                     try:
                         # Preparar el prompt
-                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        model = genai.GenerativeModel('gemini-3-pro-image-preview')
                         
                         prompt = f"""
                         Actúa como un profesor experto. Tu tarea es corregir este examen.
@@ -528,8 +528,13 @@ def manage_exams():
                                 st.write(f"**Feedback:** {correction['feedback']}")
 
                     except Exception as e:
-                        st.error(f"Ocurrió un error durante la corrección: {str(e)}")
-                        st.write(e)
+                        error_msg = str(e)
+                        if "429" in error_msg or "ResourceExhausted" in error_msg:
+                            st.error("⚠️ Has excedido la cuota gratuita de la API de Google (Rate Limit). Por favor espera unos momentos e intenta de nuevo.")
+                        elif "404" in error_msg or "NotFound" in error_msg:
+                            st.error(f"⚠️ El modelo de IA no fue encontrado o no es compatible. Error: {error_msg}")
+                        else:
+                            st.error(f"Ocurrió un error inesperado: {error_msg}")
         else:
              if st.form_submit_button("Corregir con IA"):
                  st.warning("Por favor sube un archivo primero.")
